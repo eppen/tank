@@ -31,6 +31,185 @@ FPS = 60
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Top-Down Tank Game")
 
+
+# --- 字体：屏幕上要画中文，必须自己找一款带汉字字形的字体 ---
+# pygame.font.SysFont(None, ...) 用的是自带的 freesansbold.ttf，只有拉丁字形，
+# 汉字一律被画成同一个 5px 宽的方块——屏幕上看起来就是「一串乱码」。
+# 这里按「TANK_FONT 环境变量 → 各平台常见字体文件 → 字体名」的顺序找，判定不是
+# 看名字而是**真的渲染两个字比较像素**：能区分开才算有汉字字形（.ttc 的第一张
+# 字面常常只有拉丁字母，光看名字会踩空）。都找不到就退回英文界面
+# （tank_coach.ASCII_ONLY = True），宁可全英文也不再画方块。
+FONT_FILE_CANDIDATES = (
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msyh.ttf",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
+    # Linux（发行版自带的 CJK 字体）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+)
+FONT_NAME_CANDIDATES = ("pingfangsc", "hiraginosansgb", "microsoftyahei", "simhei",
+                        "notosanscjksc", "notosanscjk", "sourcehansanssc",
+                        "wenquanyimicrohei", "wenquanyizenhei", "arialunicodems",
+                        "heitisc", "songtisc")
+# 用来判定「有没有汉字字形」的样字：三个字形互不相同才算数
+_CJK_PROBE = "命中率"
+
+_CJK_FONT = None
+_CJK_FONT_TRIED = False
+_FONT_CACHE = {}
+
+try:                        # freetype 对 .ttc（macOS 系统字体）最可靠
+    from pygame import freetype as _freetype
+
+    _freetype.init()
+except Exception:           # pragma: no cover - 精简版 pygame 可能没带 freetype
+    _freetype = None
+
+
+class ScreenFont:
+    """屏幕字体：对外只暴露 pygame.font.Font 的 render() / size()。
+
+    内部优先用 pygame.freetype。原因很实在：这台机器上 pygame.font 读
+    `/System/Library/Fonts/Hiragino Sans GB.ttc` 时，连字母 A 都会被画成
+    一整块实心方块，而 freetype 读同一个文件完全正常。两种后端都包装成
+    同一个接口，调用点（_fit_text / draw_coach_card / HUD）不用区分。
+    """
+
+    def __init__(self, ft_font):
+        self._ft = ft_font
+        self._sizes = {}
+
+    def size(self, text):
+        text = str(text)
+        size = self._sizes.get(text)
+        if size is None:
+            if not text:
+                size = (0, 0)
+            else:
+                try:
+                    rect = self._ft.get_rect(text)
+                    size = (rect.width, rect.height or self._ft.get_sized_height())
+                except Exception:
+                    size = (0, 0)
+            if len(self._sizes) < 4096:      # _fit_text 会逐字试宽，缓存一下
+                self._sizes[text] = size
+        return size
+
+    def render(self, text, antialias=False, color=(255, 255, 255), background=None):
+        text = str(text)
+        if not text:
+            surf = pygame.Surface((1, 1), pygame.SRCALPHA)
+            return surf
+        try:
+            surf, _ = self._ft.render(text, fgcolor=tuple(color),
+                                      bgcolor=None if background is None
+                                      else tuple(background))
+            return surf
+        except Exception:
+            return pygame.Surface((1, 1), pygame.SRCALPHA)
+
+    def set_bold(self, flag=True):
+        try:
+            self._ft.strong = bool(flag)
+        except Exception:
+            pass
+
+
+def _make_font(kind, value, size, bold=False):
+    """按来源造一个字体对象；都失败时返回 None。"""
+    if _freetype is not None:
+        path = value if kind == "file" else pygame.font.match_font(value)
+        if path:
+            try:
+                ft = _freetype.Font(path, size)
+                ft.antialiased = True
+                if bold:
+                    ft.strong = True
+                return ScreenFont(ft)
+            except Exception:
+                pass
+    try:
+        font = (pygame.font.Font(value, size) if kind == "file"
+                else pygame.font.SysFont(value, size))
+        if bold:
+            font.set_bold(True)
+        return font
+    except Exception:
+        return None
+
+
+def _font_has_cjk(font):
+    """字体真的能画出不同的汉字吗？
+
+    两条都满足才算：「命中率」三个字各有各的字形（不是同一个 .notdef），
+    而且不是空白（缺字时 freetype 会画出空 surface）。
+    """
+    if font is None:
+        return False
+    shots = []
+    for ch in _CJK_PROBE:
+        try:
+            raw = pygame.image.tostring(font.render(ch, False, (255, 255, 255)), "RGB")
+        except Exception:
+            return False
+        if not any(raw):        # 全黑 = 什么都没画出来
+            return False
+        shots.append(raw)
+    return len(set(shots)) == len(shots)
+
+
+def _font_source():
+    """找一款带汉字的字体，返回 ('file', 路径) / ('name', 名字) / None。"""
+    global _CJK_FONT, _CJK_FONT_TRIED
+    if _CJK_FONT_TRIED:
+        return _CJK_FONT
+    _CJK_FONT_TRIED = True
+    cands = []
+    env_font = os.environ.get("TANK_FONT")
+    if env_font:
+        cands.append(("file" if os.path.exists(env_font) else "name", env_font))
+    cands += [("file", p) for p in FONT_FILE_CANDIDATES]
+    cands += [("name", n) for n in FONT_NAME_CANDIDATES]
+    for kind, value in cands:
+        if kind == "file" and not os.path.exists(value):
+            continue
+        if _font_has_cjk(_make_font(kind, value, 20)):
+            _CJK_FONT = (kind, value)
+            return _CJK_FONT
+    if env_font:
+        print(f"[font] TANK_FONT={env_font!r} 没有汉字字形，已忽略")
+    return None
+
+
+def cjk_font_available():
+    """界面上能不能安全地画中文（False 时屏幕文案走英文）。"""
+    return _font_source() is not None
+
+
+def load_font(size, bold=False):
+    """带汉字字形的字体（同尺寸复用同一个对象）；找不到就退回默认字体。"""
+    key = (int(size), bool(bold))
+    font = _FONT_CACHE.get(key)
+    if font is not None:
+        return font
+    src = _font_source()
+    font = _make_font(src[0], src[1], size, bold) if src else None
+    if font is None:
+        font = pygame.font.SysFont(None, size, bold=bold)
+    _FONT_CACHE[key] = font
+    return font
+
 # 颜色定义
 WHITE = (255, 255, 255)
 BLACK = (18, 18, 22)
@@ -200,18 +379,27 @@ def key_code_to_name(code):
         return str(code)
 
 
-def check_fire_key(name, other_name=None):
-    """校验开火键名，返回 (键码, 错误原因)；合法时错误原因为 None。"""
+def check_fire_key(name, other_name=None, ascii_only=False):
+    """校验开火键名，返回 (键码, 错误原因)；合法时错误原因为 None。
+
+    ascii_only=True 时错误原因是英文——F4 面板上显示它，没有汉字字体时
+    中文会变成方块。
+    """
+    def msg(zh, en):
+        return en if ascii_only else zh
+
     code = key_name_to_code(name)
     if code is None:
-        return None, f"无法识别的按键 {name!r}"
+        return None, msg(f"无法识别的按键 {name!r}", f"unknown key {name!r}")
     norm = key_code_to_name(code)
     if norm in RESERVED_KEY_NAMES:
-        return None, f"{norm.upper()} 是系统保留键（ESC 退出 / F2-F5 功能键）"
+        return None, msg(f"{norm.upper()} 是系统保留键（ESC 退出 / F2-F5 功能键）",
+                         f"{norm.upper()} is reserved (ESC quit / F2-F5)")
     if other_name:
         other_code = key_name_to_code(other_name)
         if other_code is not None and other_code == code:
-            return None, f"与另一玩家的开火键 {norm.upper()} 冲突"
+            return None, msg(f"与另一玩家的开火键 {norm.upper()} 冲突",
+                             f"clashes with the other player's {norm.upper()}")
     return code, None
 
 
@@ -310,17 +498,22 @@ def save_fire_config(names, pad_fire=None, path=None):
 
 
 def _fit_text(font, text, width):
-    """把一行文字裁到指定宽度内（超出用 … 收尾），避免卡片内容溢出。"""
+    """把一行文字裁到指定宽度内（超出用省略号收尾），避免卡片内容溢出。"""
     if font.size(text)[0] <= width:
         return text
-    while text and font.size(text + "…")[0] > width:
+    dots = "…" if cjk_font_available() else "..."
+    while text and font.size(text + dots)[0] > width:
         text = text[:-1]
-    return text + "…"
+    return text + dots
 
 
 def draw_coach_card(surf, font, small_font, title, lines, x, y, width=384,
                     accent=YELLOW):
-    """评估卡片：半透明底板 + 标题 + 若干短行（F5 实时面板 / 局末报告共用）。"""
+    """评估卡片：半透明底板 + 标题 + 若干短行（F5 实时面板 / 局末报告共用）。
+
+    行首标记统一用 ASCII：`!` = 要纠正的（橙），`>` = 目标 / 历史（绿），
+    这样中英两种文案、有没有汉字字体都能正确上色。
+    """
     pad = 12
     line_h = 18
     height = 32 + line_h * max(1, len(lines))
@@ -335,7 +528,7 @@ def draw_coach_card(surf, font, small_font, title, lines, x, y, width=384,
         color = (206, 206, 218)
         if line.startswith("!"):
             color = (240, 176, 120)
-        elif line.startswith("目标") or line.startswith("历史"):
+        elif line.startswith((">", "目标", "历史")):
             color = (150, 220, 160)
         surf.blit(small_font.render(_fit_text(small_font, line, width - pad * 2),
                                     True, color),
@@ -1130,7 +1323,12 @@ def main():
         return
     if "--coach-history" in args:
         # 只看历史战绩（不开窗口、不初始化对局），用来判断自己有没有在进步
-        print(tank_coach.history_text(tank_coach.load_history()))
+        hist = tank_coach.load_history()
+        try:
+            print(tank_coach.history_text(hist))
+        except UnicodeEncodeError:      # 终端编码不够：换英文表格再打一次
+            tank_coach.ASCII_ONLY = True
+            print(tank_coach.history_text(hist))
         return
     mode, ai_skill = _parse_mode()
     # 攻击键配置：启动即读（读不到/写坏都回退默认），手柄开火按钮也一起生效
@@ -1154,9 +1352,17 @@ def main():
               f"（TANK_COACH=0 关闭）")
     else:
         print("[coach] 评估已关闭（TANK_COACH=0）")
-    font = pygame.font.SysFont(None, 22)
-    small_font = pygame.font.SysFont(None, 18)
-    big_font = pygame.font.SysFont(None, 56)
+    # 字体：找不到带汉字的字体就把屏幕文案切英文（否则中文会画成方块）
+    font = load_font(22)
+    small_font = load_font(18)
+    big_font = load_font(56)
+    tank_coach.ASCII_ONLY = not cjk_font_available()
+    if tank_coach.ASCII_ONLY:
+        print("[font] 系统里没找到带汉字字形的字体 → 屏幕文案改用英文"
+              "（终端仍是中文）；可用 TANK_FONT=/path/to/font.ttc 指定")
+    else:
+        kind, value = _font_source()
+        print(f"[font] 屏幕字体：{value}（{kind}）")
 
     world = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
     tanks = pygame.sprite.Group()
@@ -1298,7 +1504,10 @@ def main():
         """一局结束：终端打详细评估 → 写历史 → 缓存屏幕报告。"""
         if coach is None:
             return []
-        print(coach.report_text(coach_hist))
+        try:
+            print(coach.report_text(coach_hist))
+        except UnicodeEncodeError:      # 终端编码不够（如非 UTF-8 控制台）
+            print(coach.report_text(coach_hist, ascii_only=True))
         ok, info = tank_coach.record_round(coach_hist, coach.history_row(won=won))
         if not ok:
             print(f"[coach] 历史写入失败：{info}")
@@ -1325,7 +1534,9 @@ def main():
         """把某个槽位换成 keycode；校验 → 立即生效 → 立刻落盘。"""
         other = "p2" if slot == "p1" else "p1"
         name = key_code_to_name(keycode)
-        code, err = check_fire_key(name, fire_names[other])
+        # 错误原因会显示在 F4 面板上：没有汉字字体时要英文，否则是方块
+        code, err = check_fire_key(name, fire_names[other],
+                                   ascii_only=not cjk_font_available())
         if err:
             set_msg(f"Rejected: {err}")
             print(f"[keys] 拒绝 {slot.upper()} 开火键 {name!r}：{err}")

@@ -21,6 +21,17 @@
 import json
 import math
 import os
+import unicodedata
+
+# 屏幕文案语言开关：True = 只用 ASCII。系统里找不到带中文字形的字体时，
+# tank_game 会把它置位——pygame 的默认字体（freesansbold）没有汉字，
+# 中文会被画成一串一模一样的方块，看起来就是乱码。终端报告不受影响。
+ASCII_ONLY = False
+
+
+def _t(zh, en):
+    """屏幕文案二选一：ASCII_ONLY 时用英文，否则用中文。"""
+    return en if ASCII_ONLY else zh
 
 # --- 分档：分析「在什么距离 / 什么准度下开火」的命中率 ---
 DISTANCE_BANDS = (
@@ -387,29 +398,38 @@ class BattleCoach:
             out.append({
                 "code": "held", "severity": 92,
                 "title": "开火键按着不放",
+                "title_en": "Holding the fire button down",
                 "evidence": f"按住开火键的 {m['held_frames']} 帧里，"
                             f"{m['held_blocked']} 帧冷却已好却没出枪。",
                 "fix": "开火是上升沿：按住只打一枪。改成每 0.3 秒敲一下，"
                        "冷却期间松开再按。",
+                "fix_en": "Fire is edge-triggered: holding fires once. Tap every "
+                          "0.3s and release during cooldown.",
             })
 
         if m["far_shots"] >= 2 and m["far_shot_ratio"] >= 0.1:
             out.append({
                 "code": "far", "severity": 85,
                 "title": "超距开火，白送冷却",
+                "title_en": "Firing out of range",
                 "evidence": f"{m['far_shots']} 发（{m['far_shot_ratio']*100:.0f}%）是在 "
                             f"{self.fire_range:.0f}px 外打的，子弹先飞出屏幕。",
                 "fix": f"压到 {self.fire_range:.0f}px 以内再开火；太远时先接近，"
                        "把冷却留给能打中的距离。",
+                "fix_en": f"Close to within {self.fire_range:.0f}px before shooting; "
+                          "beyond that the bullet leaves the screen.",
             })
 
         if m["shield_hits"] >= 1 and m["shield_shot_ratio"] >= 0.08:
             out.append({
                 "code": "shield", "severity": 78,
                 "title": "打在电脑的无敌护盾上",
+                "title_en": "Shooting the CPU spawn shield",
                 "evidence": f"{m['shield_hits']} 发打在它复活后的 "
                             f"{self.invuln_frames / self.fps:.0f} 秒无敌里，一点血都没掉。",
                 "fix": "电脑刚复活时停火，等白环消失；这 1 秒用来拉距离或换角度。",
+                "fix_en": "Hold fire while its white ring is up; use that second to "
+                          "reposition instead.",
             })
 
         if m["avg_err"] >= 8.0 and m["shots"] >= 3:
@@ -419,80 +439,104 @@ class BattleCoach:
             out.append({
                 "code": "aim", "severity": min(88.0, 60.0 + (m["avg_err"] - 8.0) * 2.0),
                 "title": "炮口没对准就开火",
+                "title_en": "Firing before the gun is aligned",
                 "evidence": f"开火时平均偏差 {m['avg_err']:.1f}°{detail}。",
                 "fix": "转到 5° 内再打：满舵 4°/帧，5° 只要 0.02 秒，"
                        "比浪费 18 帧冷却划算得多。",
+                "fix_en": "Only fire inside 5 deg: full turn is 4 deg/frame, so "
+                          "lining up costs ~0.02s, far cheaper than 18 frames idle.",
             })
 
         if m["own_invuln_windows"] >= 1 and m["shots_own_invuln"] == 0:
             out.append({
                 "code": "own_invuln", "severity": 62,
                 "title": "浪费了自己的无敌 1 秒",
+                "title_en": "Wasted your own spawn shield",
                 "evidence": f"你复活了 {m['own_invuln_windows']} 次，无敌期间一发都没打。",
                 "fix": f"复活瞬间就朝电脑开火：{self.invuln_frames} 帧够打 "
                        f"{self.invuln_frames // self.fire_cooldown + 1} 发"
                        f"（第 0/18/36/54 帧各一发）。",
+                "fix_en": f"Start shooting the moment you respawn: the "
+                          f"{self.invuln_frames}-frame shield fits "
+                          f"{self.invuln_frames // self.fire_cooldown + 1} shots.",
             })
 
         if m["idle_lost_shots"] >= 3:
             out.append({
                 "code": "idle", "severity": 68,
                 "title": "冷却空转",
+                "title_en": "Idling on a ready cooldown",
                 "evidence": f"有 {m['idle_ready_frames']} 帧处在「对准 + 射程内 + "
                             f"冷却已好」却没开火，约等于少打 {m['idle_lost_shots']} 发。",
                 "fix": "到位就打。冷却只有 0.3 秒，空着就是白丢伤害。",
+                "fix_en": "Shoot as soon as you are aimed and in range; 0.3s of idle "
+                          "cooldown is free damage lost.",
             })
 
         if m["stationary_ratio"] >= 0.6 and m["in_range_ratio"] >= 0.3:
             out.append({
                 "code": "static", "severity": 55,
                 "title": "几乎站着不动",
+                "title_en": "Standing still",
                 "evidence": f"{m['stationary_ratio']*100:.0f}% 的时间原地不动"
                             f"（有 {m['in_range_ratio']*100:.0f}% 的时间在它的射程内）。",
                 "fix": "持续小幅换向/前后移动，破坏它算的提前量；"
                        "静止的目标 hard 命中率接近 100%。",
+                "fix_en": "Keep making small heading changes and short moves; a still "
+                          "target is a near-certain hit for HARD.",
             })
 
         if m["deaths"] >= 3:
             out.append({
                 "code": "deaths", "severity": 60,
                 "title": "被击毁太频繁",
+                "title_en": "Getting destroyed too often",
                 "evidence": f"本局被击毁 {m['deaths']} 次，平均一条命只撑了"
                             f"{m['duration'] / max(1, m['deaths']):.1f} 秒。",
                 "fix": "把距离维持在 280–420px：这个区间它的命中率最低，"
                        "你的命中率还能保住。",
+                "fix_en": "Hold 280-420px: its accuracy is lowest there and yours "
+                          "still holds up.",
             })
 
         if m["shots"] >= 5 and m["accuracy"] < 0.35:
             out.append({
                 "code": "acc", "severity": 70,
                 "title": "命中率偏低",
+                "title_en": "Low accuracy",
                 "evidence": f"{m['shots']} 发只中了 {m['hits']} 发"
                             f"（{m['accuracy']*100:.0f}%）。",
                 "fix": "宁可少打几发：等准星收进 5° 再开火，命中率会明显上去。",
+                "fix_en": "Trade volume for quality: only fire inside 5 deg and the "
+                          "hit rate jumps.",
             })
 
         out.sort(key=lambda a: -a["severity"])
         return out
 
     def positives(self):
-        """做得好的地方（评估不只挑错）。"""
+        """做得好的地方（评估不只挑错）。中英双份，跟 ASCII_ONLY 走。"""
         m = self.metrics()
         good = []
         if m["shots"] >= 3 and m["accuracy"] >= 0.5:
-            good.append(f"命中率 {m['accuracy']*100:.0f}%（{m['hits']}/{m['shots']}）")
+            good.append(_t(f"命中率 {m['accuracy']*100:.0f}%"
+                           f"（{m['hits']}/{m['shots']}）",
+                           f"accuracy {m['accuracy']*100:.0f}% "
+                           f"({m['hits']}/{m['shots']})"))
         if m["far_shots"] == 0 and m["shots"] >= 3:
-            good.append("没有一发超距浪费")
+            good.append(_t("没有一发超距浪费", "no shots wasted out of range"))
         if m["shield_hits"] == 0 and m["shots"] >= 3:
-            good.append("没打电脑的无敌护盾")
+            good.append(_t("没打电脑的无敌护盾", "never shot its spawn shield"))
         if m["deaths"] == 0 and m["kills"] >= 1:
-            good.append("一条命没丢就击毁它")
+            good.append(_t("一条命没丢就击毁它", "killed it without losing a life"))
         if m["held_blocked"] == 0 and m["shots"] >= 3:
-            good.append("开火节奏干净（没有按住空转）")
+            good.append(_t("开火节奏干净（没有按住空转）",
+                           "clean fire rhythm (no holding)"))
         if m["dodge_ratio"] >= 0.5 and m["enemy_shots"] >= 3:
-            good.append(f"它开火后 {m['dodge_ratio']*100:.0f}% 的情况你都换了向")
+            good.append(_t(f"它开火后 {m['dodge_ratio']*100:.0f}% 的情况你都换了向",
+                           f"turned after {m['dodge_ratio']*100:.0f}% of its shots"))
         if m["kills"] >= 2:
-            good.append(f"击毁 {m['kills']} 次")
+            good.append(_t(f"击毁 {m['kills']} 次", f"destroyed it {m['kills']}x"))
         return good
 
     def drills(self):
@@ -502,25 +546,36 @@ class BattleCoach:
         targets = {
             "accuracy": (
                 f"命中率 {m['accuracy']*100:.0f}% → {BENCH_ACCURACY*100:.0f}%",
-                "只在准星收进 5° 内开火"),
+                "只在准星收进 5° 内开火",
+                f"Accuracy {m['accuracy']*100:.0f}% -> {BENCH_ACCURACY*100:.0f}%",
+                "only fire inside 5 deg"),
             "output": (
                 f"有效输出 {m['hits_per_sec']:.2f} → {BENCH_HITS_PER_SEC:.2f} 命中/秒",
-                "冷却一好就打，一下一下敲"),
+                "冷却一好就打，一下一下敲",
+                f"Hits/sec {m['hits_per_sec']:.2f} -> {BENCH_HITS_PER_SEC:.2f}",
+                "shoot the moment the cooldown clears, tap don't hold"),
             "discipline": (
                 "废弹（超距 / 打护盾 / 按住空转）压到 5% 以内",
-                "打之前先看一眼距离和它的白环"),
+                "打之前先看一眼距离和它的白环",
+                "Waste (far / shield / held) under 5%",
+                "check the range and its white ring before firing"),
             "survival": (
                 f"被击毁 {m['deaths']} 次 → 1 次以内",
-                "距离保持 280–420px，别贴脸对枪"),
+                "距离保持 280–420px，别贴脸对枪",
+                f"Deaths {m['deaths']} -> at most 1",
+                "hold 280-420px, do not brawl up close"),
             "movement": (
                 f"原地不动 {m['stationary_ratio']*100:.0f}% → 40% 以内",
-                "一直在动：小幅换向比站桩安全"),
+                "一直在动：小幅换向比站桩安全",
+                f"Standing still {m['stationary_ratio']*100:.0f}% -> under 40%",
+                "keep moving: small heading changes beat standing"),
         }
         order = sorted(parts, key=lambda k: parts[k])
         out = []
         for key in order[:2]:
-            title, how = targets[key]
+            title, how, title_en, how_en = targets[key]
             out.append({"item": key, "target": title, "how": how,
+                        "target_en": title_en, "how_en": how_en,
                         "score": round(parts[key])})
         return out
 
@@ -534,7 +589,9 @@ class BattleCoach:
             if advice["severity"] < 60 or advice["code"] in self._hinted:
                 continue
             self._hinted.add(advice["code"])
-            return advice["code"], f"{advice['title']}：{advice['fix']}"
+            title = _t(advice["title"], advice["title_en"])
+            fix = _t(advice["fix"], advice["fix_en"])
+            return advice["code"], _t(f"{title}：{fix}", f"{title}: {fix}")
         return None
 
     def hud_lines(self):
@@ -553,51 +610,87 @@ class BattleCoach:
             f"  M {parts['movement']:.0f}",
         ]
 
-    def report_text(self, hist=None):
-        """终端用：一局结束的完整评估。"""
+    def report_text(self, hist=None, ascii_only=None):
+        """终端用：一局结束的完整评估。
+
+        ascii_only=None 跟随 ASCII_ONLY；显式 True 用于终端编码不够时的兜底
+        （打印中文抛 UnicodeEncodeError 时，改成英文再打一遍）。
+        """
+        global ASCII_ONLY
+        if ascii_only is not None:
+            prev, ASCII_ONLY = ASCII_ONLY, bool(ascii_only)
+            try:
+                return self.report_text(hist)
+            finally:
+                ASCII_ONLY = prev
         m = self.metrics()
         parts, total = self.scores()
         lines = [
-            f"=== 本局评估 · {m['skill']} · {m['duration']:.1f}s ===",
-            f"综合 {total:.0f}/100 ({grade_of(total)})    "
-            f"命中 {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%    "
-            f"有效输出 {m['hits_per_sec']:.2f} 命中/秒",
-            f"开火纪律：超距 {m['far_shots']} 发 / 打护盾 {m['shield_hits']} 发 / "
-            f"按住空转 {m['held_blocked']} 帧 / 冷却空转约 {m['idle_lost_shots']} 发",
-            (f"站位：平均 {m['avg_dist']:.0f}px（贴身 {m['close_shots']} 发），"
-             f"原地不动 {m['stationary_ratio']*100:.0f}%"
-             if m["shots"] else
-             f"站位：本局没开过枪，原地不动 {m['stationary_ratio']*100:.0f}%"),
-            f"生存：被击毁 {m['deaths']} 次，挨 {m['hits_taken']} 发"
-            f"（电脑命中率 {m['enemy_accuracy']*100:.0f}%），"
-            f"它开火后换向 {m['dodge_ratio']*100:.0f}%",
-            f"分项：准度 {parts['accuracy']:.0f} · 输出 {parts['output']:.0f} · "
-            f"纪律 {parts['discipline']:.0f} · 生存 {parts['survival']:.0f} · "
-            f"走位 {parts['movement']:.0f}",
+            _t(f"=== 本局评估 · {m['skill']} · {m['duration']:.1f}s ===",
+               f"=== ROUND REPORT | {m['skill']} | {m['duration']:.1f}s ==="),
+            _t(f"综合 {total:.0f}/100 ({grade_of(total)})    "
+               f"命中 {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%    "
+               f"有效输出 {m['hits_per_sec']:.2f} 命中/秒",
+               f"SCORE {total:.0f}/100 ({grade_of(total)})    "
+               f"hits {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%    "
+               f"output {m['hits_per_sec']:.2f} hits/s"),
+            _t(f"开火纪律：超距 {m['far_shots']} 发 / 打护盾 {m['shield_hits']} 发 / "
+               f"按住空转 {m['held_blocked']} 帧 / 冷却空转约 {m['idle_lost_shots']} 发",
+               f"Discipline: {m['far_shots']} far / {m['shield_hits']} on shield / "
+               f"{m['held_blocked']} held frames / ~{m['idle_lost_shots']} idle shots"),
+            _t(f"站位：平均 {m['avg_dist']:.0f}px（贴身 {m['close_shots']} 发），"
+               f"原地不动 {m['stationary_ratio']*100:.0f}%"
+               if m["shots"] else
+               f"站位：本局没开过枪，原地不动 {m['stationary_ratio']*100:.0f}%",
+               f"Spacing: avg {m['avg_dist']:.0f}px ({m['close_shots']} point-blank), "
+               f"standing still {m['stationary_ratio']*100:.0f}%"
+               if m["shots"] else
+               f"Spacing: no shots fired, standing still "
+               f"{m['stationary_ratio']*100:.0f}%"),
+            _t(f"生存：被击毁 {m['deaths']} 次，挨 {m['hits_taken']} 发"
+               f"（电脑命中率 {m['enemy_accuracy']*100:.0f}%），"
+               f"它开火后换向 {m['dodge_ratio']*100:.0f}%",
+               f"Survival: destroyed {m['deaths']}x, took {m['hits_taken']} hits "
+               f"(CPU accuracy {m['enemy_accuracy']*100:.0f}%), "
+               f"turned after its shot {m['dodge_ratio']*100:.0f}%"),
+            _t(f"分项：准度 {parts['accuracy']:.0f} · 输出 {parts['output']:.0f} · "
+               f"纪律 {parts['discipline']:.0f} · 生存 {parts['survival']:.0f} · "
+               f"走位 {parts['movement']:.0f}",
+               f"Parts: aim {parts['accuracy']:.0f} | output {parts['output']:.0f}"
+               f" | discipline {parts['discipline']:.0f}"
+               f" | survival {parts['survival']:.0f}"
+               f" | movement {parts['movement']:.0f}"),
         ]
 
         advices = self.advices()
         lines.append("")
         if advices:
-            lines.append("纠正：")
+            lines.append(_t("纠正：", "Fix:"))
             for i, a in enumerate(advices[:4], 1):
-                lines.append(f" {i}. [{'!' if a['severity'] >= 70 else '·'}] {a['title']}")
-                lines.append(f"    证据：{a['evidence']}")
-                lines.append(f"    怎么改：{a['fix']}")
+                mark = "!" if a["severity"] >= 70 else "·"
+                lines.append(f" {i}. [{mark}] {_t(a['title'], a['title_en'])}")
+                lines.append(_t(f"    证据：{a['evidence']}",
+                                f"    evidence: {a['title_en']} "
+                                f"({a['severity']:.0f})"))
+                lines.append(_t(f"    怎么改：{a['fix']}",
+                                f"    how to fix: {a['fix_en']}"))
         else:
-            lines.append("纠正：这一局没发现明显问题。")
+            lines.append(_t("纠正：这一局没发现明显问题。",
+                            "Fix: no obvious problem this round."))
 
         good = self.positives()
         if good:
             lines.append("")
-            lines.append("做得好的地方：" + "；".join(good))
+            lines.append(_t("做得好的地方：", "What worked: ")
+                         + _t("；", "; ").join(good))
 
         drills = self.drills()
         if drills:
             lines.append("")
-            lines.append("下一局目标：")
+            lines.append(_t("下一局目标：", "Next round goals:"))
             for d in drills:
-                lines.append(f" · {d['target']}（{d['how']}）")
+                lines.append(_t(f" · {d['target']}（{d['how']}）",
+                                f" - {d['target_en']} ({d['how_en']})"))
 
         trend = history_trend_text(hist)
         if trend:
@@ -606,37 +699,53 @@ class BattleCoach:
         return "\n".join(lines)
 
     def report_lines(self, hist=None, compact=True):
-        """屏幕用：短行，够看清结论即可。"""
+        """屏幕用：短行，够看清结论即可。
+
+        中英双份文案由 ASCII_ONLY 决定（系统没中文字体时走英文，避免方块）。
+        行首标记是 ASCII 的：`!` = 要纠正的，`>` = 目标 / 历史。
+        """
         m = self.metrics()
         parts, total = self.scores()
         lines = [
             f"SCORE {total:.0f}/100  ({grade_of(total)})   {m['duration']:.0f}s  "
             f"{m['skill']}",
-            f"命中 {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%   "
-            f"输出 {m['hits_per_sec']:.2f}/s",
-            f"准度{parts['accuracy']:.0f} 输出{parts['output']:.0f} "
-            f"纪律{parts['discipline']:.0f} 生存{parts['survival']:.0f} "
-            f"走位{parts['movement']:.0f}",
-            f"废弹：超距{m['far_shots']} 护盾{m['shield_hits']} "
-            f"按住{m['held_blocked']}帧",
+            _t(f"命中 {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%   "
+               f"输出 {m['hits_per_sec']:.2f}/s",
+               f"HITS {m['hits']}/{m['shots']} = {m['accuracy']*100:.0f}%   "
+               f"OUT {m['hits_per_sec']:.2f}/s"),
+            _t(f"准度{parts['accuracy']:.0f} 输出{parts['output']:.0f} "
+               f"纪律{parts['discipline']:.0f} 生存{parts['survival']:.0f} "
+               f"走位{parts['movement']:.0f}",
+               f"AIM {parts['accuracy']:.0f} OUT {parts['output']:.0f} "
+               f"DISC {parts['discipline']:.0f} SURV {parts['survival']:.0f} "
+               f"MOVE {parts['movement']:.0f}"),
+            _t(f"废弹：超距{m['far_shots']} 护盾{m['shield_hits']} "
+               f"按住{m['held_blocked']}帧",
+               f"WASTE far {m['far_shots']} shield {m['shield_hits']} "
+               f"held {m['held_blocked']}f"),
         ]
         if not compact:
-            lines.append(f"平均距离 {m['avg_dist']:.0f}px  "
-                         f"平均偏差 {m['avg_err']:.1f}°")
+            lines.append(_t(f"平均距离 {m['avg_dist']:.0f}px  "
+                            f"平均偏差 {m['avg_err']:.1f}°",
+                            f"DIST {m['avg_dist']:.0f}px  "
+                            f"AIM ERR {m['avg_err']:.1f} deg"))
         advice = self.advices()
         if advice:
             lines.append("")
             for a in advice[:3]:
-                lines.append(f"! {a['title']}")
-                lines.append(f"  {a['fix']}")
+                lines.append(f"! {_t(a['title'], a['title_en'])}")
+                lines.append(f"  {_t(a['fix'], a['fix_en'])}")
         drills = self.drills()
         if drills:
             lines.append("")
-            lines.append(f"目标：{drills[0]['target']}")
+            lines.append(f"> {_t(drills[0]['target'], drills[0]['target_en'])}")
         best = best_row(hist)
         if best:
-            lines.append(f"历史最佳 {best.get('score', 0)} 分"
-                         f"（{best.get('grade', '?')}，第 {best.get('index', '?')} 局）")
+            lines.append(f"> " + _t(
+                f"最佳 {best.get('score', 0)} 分（{best.get('grade', '?')}，"
+                f"第 {best.get('index', '?')} 局）",
+                f"BEST {best.get('score', 0)} ({best.get('grade', '?')}, "
+                f"round {best.get('index', '?')})"))
         return lines
 
     # ------------------------------------------------------------------ 内部
@@ -719,6 +828,19 @@ def best_row(hist):
     return best
 
 
+def _disp_width(text):
+    """终端显示宽度：中日韩/全角字符占两列，`{:<7}` 按字符数补空格会错位。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in str(text))
+
+
+def _pad(text, width, align="<"):
+    """按显示宽度补齐（不是按字符数），保证表格列对齐。"""
+    text = str(text)
+    fill = " " * max(0, width - _disp_width(text))
+    return fill + text if align == ">" else text + fill
+
+
 def history_trend_text(hist, n=5):
     """「第 4 局 · 最佳 71 分 · 命中率 31% → 44% → 41%」这样一行。"""
     rows = [r for r in (hist or {}).get("rounds", []) if isinstance(r, dict)]
@@ -727,11 +849,13 @@ def history_trend_text(hist, n=5):
     accs = [r.get("accuracy") for r in rows[-n:]
             if isinstance(r.get("accuracy"), (int, float))]
     best = best_row(hist)
-    text = f"历史：第 {len(rows)} 局"
+    text = _t(f"历史：第 {len(rows)} 局", f"History: round {len(rows)}")
     if best:
-        text += f"，最佳 {best.get('score', 0)} 分（{best.get('grade', '?')}）"
+        text += _t(f"，最佳 {best.get('score', 0)} 分（{best.get('grade', '?')}）",
+                   f", best {best.get('score', 0)} ({best.get('grade', '?')})")
     if len(accs) >= 2:
-        text += "，命中率 " + " → ".join(f"{a*100:.0f}%" for a in accs)
+        text += _t("，命中率 ", ", accuracy ") + " -> ".join(
+            f"{a*100:.0f}%" for a in accs)
     return text
 
 
@@ -739,20 +863,29 @@ def history_text(hist, n=10):
     """`--coach-history`：把历史打印成小表格，方便看自己有没有在进步。"""
     rows = [r for r in (hist or {}).get("rounds", []) if isinstance(r, dict)]
     if not rows:
-        return "还没有历史记录：先在 1p 模式下打完一局（或打完按 R 再来）。"
+        return _t("还没有历史记录：先在 1p 模式下打完一局（或打完按 R 再来）。",
+                  "No history yet: finish a round in 1p mode (or press R).")
     shown = rows[-n:]
-    out = [f"=== 对战评估历史（共 {len(rows)} 局，显示最近 {len(shown)} 局）===",
-           f"{'#':>3} {'难度':<7}{'综合':>5}{'等级':>5}{'命中率':>7}"
-           f"{'命中/开枪':>10}{'击毁/被毁':>10}{'时长':>7}"]
+    header = (_pad("#", 3, ">") + _pad(_t("难度", "SKILL"), 7)
+              + _pad(_t("综合", "SCORE"), 5, ">") + _pad(_t("等级", "GR"), 5, ">")
+              + _pad(_t("命中率", "ACC"), 7, ">") + _pad(_t("命中/开枪", "HITS/SHOTS"), 10, ">")
+              + _pad(_t("击毁/被毁", "KILL/DEAD"), 10, ">")
+              + _pad(_t("时长", "TIME"), 7, ">"))
+    out = [_t(f"=== 对战评估历史（共 {len(rows)} 局，显示最近 {len(shown)} 局）===",
+              f"=== Coach history ({len(rows)} rounds, last {len(shown)}) ==="),
+           header]
     start = len(rows) - len(shown)
     for i, r in enumerate(shown, start + 1):
         acc = r.get("accuracy")
         acc_s = f"{acc*100:.0f}%" if isinstance(acc, (int, float)) else "-"
-        out.append(f"{i:>3} {str(r.get('skill', '?')):<7}{r.get('score', 0):>5}"
-                   f"{str(r.get('grade', '?')):>5}{acc_s:>7}"
-                   f"{str(r.get('hits', 0)) + '/' + str(r.get('shots', 0)):>10}"
-                   f"{str(r.get('kills', 0)) + '/' + str(r.get('deaths', 0)):>10}"
-                   f"{r.get('duration', 0):>6.1f}s")
+        out.append(_pad(i, 3, ">")
+                   + _pad(str(r.get("skill", "?")), 7)
+                   + _pad(r.get("score", 0), 5, ">")
+                   + _pad(str(r.get("grade", "?")), 5, ">")
+                   + _pad(acc_s, 7, ">")
+                   + _pad(f"{r.get('hits', 0)}/{r.get('shots', 0)}", 10, ">")
+                   + _pad(f"{r.get('kills', 0)}/{r.get('deaths', 0)}", 10, ">")
+                   + _pad(f"{r.get('duration', 0):.1f}s", 7, ">"))
     out.append("")
     trend = history_trend_text(hist)
     if trend:
