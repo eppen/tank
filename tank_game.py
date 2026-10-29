@@ -6,6 +6,8 @@ import sys
 
 import pygame
 
+import tank_coach
+
 # --- 初始化设置 ---
 pygame.init()
 try:
@@ -90,6 +92,11 @@ PAD_AXIS_SCALE = 32767.0   # Controller.get_axis() 返回 -32768..32767 的整�
 PAD_RUMBLE_MS = 180
 PAD_DEBUG = os.environ.get("TANK_PAD_DEBUG") == "1"
 
+# --- 表现评估（coach）---
+# 只统计「人类 vs 电脑」那一局（1p 模式）；双人对战没有可比基准，不计数。
+# 局末打印详细评估并写入 tank_coach.json，F5 开关实时面板，TANK_COACH=0 整体关掉。
+COACH_ENABLED = os.environ.get("TANK_COACH", "1") != "0"
+
 
 def _env_ints(name, default):
     """读取形如 TANK_PAD_AXES="0,1" 的环境变量，失败则用默认值。"""
@@ -157,8 +164,8 @@ FIRE_KEY_DEFAULTS = {"p1": "space", "p2": "return"}
 FIRE_SLOTS = ("p1", "p2")
 KEYS_CONFIG_PATH = os.environ.get("TANK_KEYS_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "tank_keys.json")
-# ESC 退出、F2/F3 切模式与难度、F4 开配置面板，都不允许被抢作开火键
-RESERVED_KEY_NAMES = frozenset({"escape", "esc", "f1", "f2", "f3", "f4"})
+# ESC 退出、F2/F3 切模式与难度、F4 开配置面板、F5 评估面板，都不允许被抢作开火键
+RESERVED_KEY_NAMES = frozenset({"escape", "esc", "f1", "f2", "f3", "f4", "f5"})
 PAD_BUTTON_MAX = getattr(pygame, "CONTROLLER_BUTTON_MAX", 11)
 PAD_BUTTON_LABELS = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "BACK", 5: "GUIDE",
                      6: "START", 7: "LSTICK", 8: "RSTICK", 9: "LB", 10: "RB",
@@ -200,7 +207,7 @@ def check_fire_key(name, other_name=None):
         return None, f"无法识别的按键 {name!r}"
     norm = key_code_to_name(code)
     if norm in RESERVED_KEY_NAMES:
-        return None, f"{norm.upper()} 是系统保留键（ESC 退出 / F2-F4 功能键）"
+        return None, f"{norm.upper()} 是系统保留键（ESC 退出 / F2-F5 功能键）"
     if other_name:
         other_code = key_name_to_code(other_name)
         if other_code is not None and other_code == code:
@@ -300,6 +307,40 @@ def save_fire_config(names, pad_fire=None, path=None):
         except OSError:
             pass
         return False, str(exc)
+
+
+def _fit_text(font, text, width):
+    """把一行文字裁到指定宽度内（超出用 … 收尾），避免卡片内容溢出。"""
+    if font.size(text)[0] <= width:
+        return text
+    while text and font.size(text + "…")[0] > width:
+        text = text[:-1]
+    return text + "…"
+
+
+def draw_coach_card(surf, font, small_font, title, lines, x, y, width=384,
+                    accent=YELLOW):
+    """评估卡片：半透明底板 + 标题 + 若干短行（F5 实时面板 / 局末报告共用）。"""
+    pad = 12
+    line_h = 18
+    height = 32 + line_h * max(1, len(lines))
+    panel = pygame.Surface((width, height), pygame.SRCALPHA)
+    panel.fill((10, 10, 14, 228))
+    pygame.draw.rect(panel, (86, 86, 104), panel.get_rect(), width=2,
+                     border_radius=8)
+    surf.blit(panel, (x, y))
+    surf.blit(font.render(_fit_text(font, title, width - pad * 2), True, accent),
+              (x + pad, y + 7))
+    for i, line in enumerate(lines):
+        color = (206, 206, 218)
+        if line.startswith("!"):
+            color = (240, 176, 120)
+        elif line.startswith("目标") or line.startswith("历史"):
+            color = (150, 220, 160)
+        surf.blit(small_font.render(_fit_text(small_font, line, width - pad * 2),
+                                    True, color),
+                  (x + pad, y + 29 + i * line_h))
+    return height
 
 
 def draw_key_config(surf, font, small_font, names, slot, msg):
@@ -1083,9 +1124,13 @@ def _parse_mode():
 
 
 def main():
-    if "--pad-scan" in [a.strip().lower() for a in sys.argv[1:]] \
-            or os.environ.get("TANK_PAD_SCAN") == "1":
+    args = [a.strip().lower() for a in sys.argv[1:]]
+    if "--pad-scan" in args or os.environ.get("TANK_PAD_SCAN") == "1":
         print_pad_scan()      # 只诊断不游戏，排手柄问题用
+        return
+    if "--coach-history" in args:
+        # 只看历史战绩（不开窗口、不初始化对局），用来判断自己有没有在进步
+        print(tank_coach.history_text(tank_coach.load_history()))
         return
     mode, ai_skill = _parse_mode()
     # 攻击键配置：启动即读（读不到/写坏都回退默认），手柄开火按钮也一起生效
@@ -1103,6 +1148,12 @@ def main():
     print(f"[rule] 每人 {MAX_LIVES} 条命：血条打空算被击毁一次，"
           f"{RESPAWN_DELAY / FPS:.1f} 秒后出生点复活，"
           f"复活后 {SPAWN_INVULN / FPS:.1f} 秒无敌；命扣完才算输")
+    if COACH_ENABLED:
+        print(f"[coach] 1p 模式下每局自动评估：局末打印评分/纠正/下一局目标，"
+              f"F5 开实时面板，历史写入 {os.path.basename(tank_coach.COACH_HISTORY_PATH)}"
+              f"（TANK_COACH=0 关闭）")
+    else:
+        print("[coach] 评估已关闭（TANK_COACH=0）")
     font = pygame.font.SysFont(None, 22)
     small_font = pygame.font.SysFont(None, 18)
     big_font = pygame.font.SysFont(None, 56)
@@ -1184,6 +1235,8 @@ def main():
         tanks.empty()
         bullets.empty()
         explosions.empty()
+        report_cache.clear()
+        toast["text"], toast["frames"] = "", 0
         t1 = Tank(
             120, 120, RED,
             {"forward": pygame.K_w, "back": pygame.K_s,
@@ -1203,7 +1256,22 @@ def main():
         t1.pad = pads[0] if len(pads) >= 1 else None
         t2.pad = pads[1] if (t2.ai is None and len(pads) >= 2) else None
         tanks.add(t1, t2)
+        # 评估器：每局一个（F2 切模式 / R 重开都跟着换），只在 1p 模式下存在
+        nonlocal coach
+        coach = None
+        if mode == "1p" and COACH_ENABLED:
+            coach = tank_coach.BattleCoach(
+                fps=FPS, fire_range=AI_FIRE_RANGE, fire_cooldown=FIRE_COOLDOWN,
+                invuln_frames=SPAWN_INVULN, max_lives=MAX_LIVES)
+            coach.begin_round(AI_SKILLS[ai_skill]["label"])
         return t1, t2
+
+    # 评估器与它的历史文件；report_cache 是局末那份屏幕报告（避免每帧重算）
+    coach = None
+    coach_hist = tank_coach.load_history()
+    report_cache = []
+    toast = {"text": "", "frames": 0}
+    coach_panel = False      # F5：实时评估面板
 
     tank1, tank2 = reset()
     rebuild_pads()   # 覆盖“启动时手柄已经插好”的情况
@@ -1215,10 +1283,30 @@ def main():
         """键盘与手柄共用的开火逻辑（冷却由 Tank.fire 内部控制）。"""
         if not tank.can_fire():
             return False
-        bullets.add(tank.fire())
+        bullet = tank.fire()
+        bullets.add(bullet)
         muzzle = tank.muzzle_position()
         explosions.add(Explosion(muzzle.x, muzzle.y, YELLOW, 16, 7))
+        if coach is not None:
+            if tank is tank1:
+                coach.on_shot(tank, tank2, bullet)   # 记下开枪那一刻的距离/准度
+            else:
+                coach.on_enemy_shot()
         return True
+
+    def finish_round(won=None):
+        """一局结束：终端打详细评估 → 写历史 → 缓存屏幕报告。"""
+        if coach is None:
+            return []
+        print(coach.report_text(coach_hist))
+        ok, info = tank_coach.record_round(coach_hist, coach.history_row(won=won))
+        if not ok:
+            print(f"[coach] 历史写入失败：{info}")
+        else:
+            print(f"[coach] 本局已写入 {os.path.basename(str(info))}"
+                  f"（共 {len(coach_hist.get('rounds', []))} 局）")
+        report_cache[:] = coach.report_lines(coach_hist, compact=True)
+        return report_cache
 
     def tank_label(tank):
         """日志用的人话标签（1p 模式下蓝车是电脑）。"""
@@ -1364,7 +1452,17 @@ def main():
                         (AI_SKILL_ORDER.index(ai_skill) + 1) % len(AI_SKILL_ORDER)]
                     if tank2.ai is not None:
                         tank2.ai.set_skill(ai_skill)
+                    if coach is not None:
+                        coach.skill_label = AI_SKILLS[ai_skill]["label"]
                     print(f"[ai] 难度 → {AI_SKILLS[ai_skill]['label']}")
+                elif event.key == pygame.K_F5:
+                    # F5：实时评估面板（局末报告不受它影响，总会显示）
+                    coach_panel = not coach_panel
+                    if coach is None:
+                        print("[coach] 双人模式没有评估基准，切到 1p（F2）才有")
+                    else:
+                        print(f"[coach] 实时面板 {'开' if coach_panel else '关'}"
+                              f"（本局累计到第 {coach.metrics()['frames']} 帧）")
                 elif winner is not None:
                     if event.key == pygame.K_r:
                         tank1, tank2 = reset()
@@ -1417,6 +1515,18 @@ def main():
                     tank.poll_controls(keys)
                     if tank.pad is not None and tank.pad.fire_edge():
                         try_fire(tank)
+                    if coach is not None and tank is tank1:
+                        # 开火键是否还按着：判断「按住不放」这种最常见的误用
+                        try:
+                            held = bool(keys[tank.controls["fire"]])
+                        except (KeyError, IndexError):
+                            held = False
+                        held = held or (tank.pad is not None and tank.pad.fire_held())
+                        coach.observe(tank, tank2, held)
+                        hint = coach.new_hint()
+                        if hint:
+                            toast["text"], toast["frames"] = hint[1], 150
+                            print(f"[coach] 即时提示：{hint[1]}")
 
             bullets.update()
             explosions.update()
@@ -1431,6 +1541,10 @@ def main():
                         bullet.kill()
                         explosions.add(Explosion(hit_point.x, hit_point.y, YELLOW, 26, 14))
                         shake = max(shake, 5.0)
+                        shielded = tank.invuln > 0        # 复活无敌：这一发不掉血
+                        if coach is not None:
+                            coach.on_hit(by_human=(bullet.owner is tank1),
+                                         shield=shielded, bullet=bullet)
                         if tank.take_hit(DAMAGE):
                             if tank.pad is not None:
                                 tank.pad.rumble(PAD_RUMBLE_MS, 0.8)   # 击毁时震一下
@@ -1439,6 +1553,9 @@ def main():
                             shake = max(shake, 15.0)
                             tank.kill()  # 移出精灵组，不再绘制
                             # 生命值：扣一条命，还有命就等复活，扣完才分胜负
+                            if coach is not None:
+                                # 放在 lose_life() 之前：最后一条命也算进统计
+                                coach.on_death(victim_is_human=(tank is tank1))
                             if tank.lose_life():
                                 print(f"[life] {tank_label(tank)} 被击毁，"
                                       f"剩 {tank.lives} 条命，"
@@ -1446,6 +1563,7 @@ def main():
                             elif mode == "1p":
                                 winner = "YOU WIN!" if tank is tank2 else "CPU WINS!"
                                 print(f"[life] {tank_label(tank)} 命已用尽，本局结束")
+                                finish_round(won=(tank is tank2))
                             else:
                                 winner = ("P1 (red) wins!" if tank is tank2
                                           else "P2 (blue) wins!")
@@ -1453,6 +1571,8 @@ def main():
                         break
 
             shake = max(0.0, shake - 0.9)
+            if toast["frames"] > 0:
+                toast["frames"] -= 1
 
         for tank in (tank1, tank2):
             tank.sync_image()
@@ -1503,7 +1623,7 @@ def main():
 
         # 模式提示（F2 切模式 / F3 切难度 / F4 改开火键，随时可按）
         mode_text = (f"Mode: 1P vs CPU - F2 switch, F3 AI level "
-                     f"({AI_SKILLS[ai_skill]['label']}), F4 fire keys"
+                     f"({AI_SKILLS[ai_skill]['label']}), F4 fire keys, F5 coach"
                      if mode == "1p" else
                      "Mode: 2P duel - F2 play vs CPU, F4 fire keys")
         mode_hint = small_font.render(mode_text, True, GRAY)
@@ -1536,9 +1656,31 @@ def main():
         if winner:
             text = big_font.render(winner, True, WHITE)
             sub = font.render("R / Start restart   F2 1P-2P   F3 AI level   "
-                              "F4 fire keys   ESC quit", True, GRAY)
+                              "F4 fire keys   F5 coach   ESC quit", True, GRAY)
             screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
             screen.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
+
+        # 表现评估：局末报告卡（左下，避开中央的胜负提示） / F5 实时面板
+        if coach is not None:
+            if winner is not None and report_cache:
+                h = 32 + 18 * len(report_cache)
+                draw_coach_card(screen, font, small_font, "BATTLE REPORT",
+                                report_cache, 12, max(70, SCREEN_HEIGHT - 34 - h),
+                                width=404)
+            elif coach_panel and winner is None:
+                draw_coach_card(screen, font, small_font,
+                                f"COACH (F5) - {coach.skill_label}",
+                                coach.hud_lines(), 12, 76, width=300)
+
+        # 即时纠正提示（新触发的误用只在屏幕上挂 2.5 秒，不打断对局）
+        if toast["frames"] > 0 and toast["text"]:
+            tip = small_font.render(_fit_text(small_font, "COACH: " + toast["text"], 560),
+                                    True, (250, 196, 130))
+            bg = pygame.Surface((tip.get_width() + 16, tip.get_height() + 8),
+                                pygame.SRCALPHA)
+            bg.fill((12, 12, 16, 210))
+            screen.blit(bg, bg.get_rect(center=(SCREEN_WIDTH // 2, 74)))
+            screen.blit(tip, tip.get_rect(center=(SCREEN_WIDTH // 2, 74)))
 
         pygame.display.flip()
         clock.tick(FPS)
