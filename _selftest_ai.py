@@ -20,6 +20,15 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 os.environ.pop("TANK_MODE", None)
 os.environ.pop("TANK_AI", None)
+# 开火键指向临时文件：否则会读到开发机本地的 tank_keys.json（改过键时
+# "P2 按 ENTER 开火" 的断言会失败，看起来像代码坏了）
+_KEYS_TMP = "/tmp/tk_ai_selftest.json"
+if "TANK_KEYS_FILE" not in os.environ:
+    try:
+        os.remove(_KEYS_TMP)          # 上一轮遗留的改键也不能影响断言
+    except OSError:
+        pass
+    os.environ["TANK_KEYS_FILE"] = _KEYS_TMP
 
 import pygame
 
