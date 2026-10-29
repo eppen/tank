@@ -1,0 +1,11 @@
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+
+# 游戏运行时写出的本地配置（F4 改键会覆盖它，删除后自动重建默认值）
+tank_keys.json
+
+# 系统 / 编辑器杂项
+.DS_Store
+.vscode/
+.idea/
