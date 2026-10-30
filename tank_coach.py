@@ -442,10 +442,10 @@ class BattleCoach:
                 "title": "炮口没对准就开火",
                 "title_en": "Firing before the gun is aligned",
                 "evidence": f"开火时平均偏差 {m['avg_err']:.1f}°{detail}。",
-                "fix": "转到 5° 内再打：满舵 4°/帧，5° 只要 0.02 秒，"
+                "fix": "转到 5° 内再打：点按一格只走 1°，2~3 下就能收进 5°，"
                        "比浪费 18 帧冷却划算得多。",
-                "fix_en": "Only fire inside 5 deg: full turn is 4 deg/frame, so "
-                          "lining up costs ~0.02s, far cheaper than 18 frames idle.",
+                "fix_en": "Only fire inside 5 deg: one tap turns 1 deg, so 2-3 "
+                          "taps get you inside 5 deg - far cheaper than 18 frames idle.",
             })
 
         if m["own_invuln_windows"] >= 1 and m["shots_own_invuln"] == 0:

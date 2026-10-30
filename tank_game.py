@@ -229,6 +229,18 @@ TANK_HALF = TANK_SIZE // 2
 TURN_RIGHT = +1.0   # 顺时针 = 画面右转 = 角度增大
 TURN_LEFT = -1.0    # 逆时针 = 画面左转 = 角度减小
 
+# --- 键盘转向的「点按微转」---
+# 满舵转速 = Tank.turn_speed（默认 4°/帧 @FPS=60，即 240°/s）。问题是人手
+# 一次轻敲持续 3~6 帧 = 12~24°，而敌人的方向是 atan2 算出来的连续实数：
+# 只按一下就越过目标 4° 的整数倍格点，于是永远只能「过冲 -> 反向过冲」。
+# 这里让键盘起手那一帧只给 TURN_FINE_GAIN 的增益（4°/帧 × 0.25 = 1°/帧），
+# 同向按住 TURN_RAMP_FRAMES 帧后线性升到满舵：点一下走 1°，甩炮口按住不放
+# 时速度和以前完全一样。手柄摇杆本来就是连续量，不走这条加速曲线。
+# 附带效果：可达角度从「起点 + 4k°」变成可以停在任意角度附近。
+TURN_FINE_GAIN = 0.25      # 起手一帧的转向增益（满舵的 1/4 = 1°/帧）
+TURN_RAMP_FRAMES = 8.0     # 从起手增益线性加到满舵所需的帧数（@60fps ≈ 0.13 秒）
+TURN_SPEED_DEG_PER_SEC = 240.0   # 满舵转速 = 4°/帧 × 60fps，文档/换算用
+
 # 战斗参数
 MAX_HP = 100
 DAMAGE = 10            # 每发扣 10 血 => 10 发击毁一次（一条命约 7 秒）
@@ -634,6 +646,9 @@ class Tank(pygame.sprite.Sprite):
         self.speed = speed
         self.turn_speed = turn_speed
         self.angle = 0.0  # 0 = 朝上，顺时针为正
+        # 键盘转向的加速段状态：同向连续按住的时长（按 60fps 的帧计）与方向
+        self.turn_hold = 0.0
+        self.turn_sign = 0.0
         self.pos = pygame.Vector2(x, y)
         # 出生点：复位 / 掉命复活都回到这里（朝向也回到出生朝向）
         self.spawn_point = pygame.Vector2(x, y)
@@ -683,22 +698,29 @@ class Tank(pygame.sprite.Sprite):
         return surf
 
     # --- 移动 ---
-    def drive(self, turn=0.0, move=0.0):
-        """模拟量输入通道：turn/move 为 -1..1。
+    def drive(self, turn=0.0, move=0.0, dt=1.0 / FPS):
+        """模拟量输入通道：turn/move 为 -1..1，dt 为上一帧耗时（秒）。
 
         符号约定（见模块顶部 TURN_RIGHT / TURN_LEFT，唯一出处）：
         turn > 0 = 顺时针 = 画面右转 = 角度增大；turn < 0 = 画面左转。
         键盘（turn=±1、move=±1）和手柄摇杆（连续量）共用这一份物理逻辑。
+
+        turn_speed / speed 都是「每标准帧（1/60 秒）」的量，这里乘 dt × FPS
+        折算成真实时间：
+          - dt 默认 1/60 时与旧版逐位一致（所有自测脚本 / 试跑脚本都不传 dt）；
+          - main() 把 clock.tick() 实测的帧间隔传进来，掉帧（字体渲染、评估
+            面板）时转速与车速不再跟着变慢，手感不再随帧率漂移。
         """
+        scale = dt * FPS          # 1.0 = 标准帧；掉帧 > 1，超快帧 < 1
         if turn:
-            self.angle += self.turn_speed * turn
+            self.angle += self.turn_speed * turn * scale
         self.angle %= 360
 
         if move:
             # 倒车慢一点：前进全速，后退 0.6 倍
             speed_scale = 1.0 if move > 0 else 0.6
             rad = math.radians(self.angle)
-            step = self.speed * speed_scale * abs(move)
+            step = self.speed * speed_scale * abs(move) * scale
             direction = 1.0 if move > 0 else -1.0
             self.pos.x += math.sin(rad) * step * direction
             self.pos.y -= math.cos(rad) * step * direction
@@ -707,8 +729,14 @@ class Tank(pygame.sprite.Sprite):
         self.pos.x = max(TANK_HALF, min(SCREEN_WIDTH - TANK_HALF, self.pos.x))
         self.pos.y = max(TANK_HALF, min(SCREEN_HEIGHT - TANK_HALF, self.pos.y))
 
-    def read_keyboard_axes(self, keys):
-        """把键盘按键折算成 (turn, move)，取值 ∈ {-1, 0, 1}，供 drive() 使用。"""
+    def read_keyboard_axes(self, keys, dt=1.0 / FPS):
+        """把键盘按键折算成 (turn, move)：move ∈ {-1,0,1}，turn ∈ [-1,1]。
+
+        turn 的幅度带「点按微转」：起手那一帧只给 TURN_FINE_GAIN（默认 0.25，
+        即 1°/帧），同向按住 TURN_RAMP_FRAMES 帧后线性升到满舵（4°/帧）。
+        原因见模块顶部 TURN_FINE_GAIN 的注释：一步 4° 的格点永远落不到
+        atan2 算出的敌人方向上，只能靠小步长把炮口停在目标附近。
+        """
 
         def pressed(keycode):
             try:
@@ -722,6 +750,21 @@ class Tank(pygame.sprite.Sprite):
         if pressed(self.controls["right"]):
             turn += TURN_RIGHT     # 顺时针 = 画面右转 = 角度增大
 
+        if turn:
+            sign = 1.0 if turn > 0 else -1.0
+            if sign != self.turn_sign:      # 换向：加速段从头开始
+                self.turn_sign = sign
+                self.turn_hold = 0.0
+            # 按住时长按 60fps 的「帧」累计，这样换帧率不影响加速曲线
+            self.turn_hold += max(dt, 0.0) * FPS
+            gain = min(1.0, TURN_FINE_GAIN +
+                       (1.0 - TURN_FINE_GAIN) *
+                       max(0.0, self.turn_hold - 1.0) / TURN_RAMP_FRAMES)
+            turn *= gain
+        else:
+            self.turn_sign = 0.0            # 松手 / 左右同按：加速段复位
+            self.turn_hold = 0.0
+
         move = 0.0
         if pressed(self.controls["forward"]):
             move += 1.0
@@ -729,17 +772,18 @@ class Tank(pygame.sprite.Sprite):
             move -= 1.0
         return turn, move
 
-    def handle_input(self, keys):
-        """键盘输入（签名与语义保持不变，_selftest.py 依赖它）。"""
-        self.drive(*self.read_keyboard_axes(keys))
+    def handle_input(self, keys, dt=1.0 / FPS):
+        """键盘输入（签名保持兼容：_selftest.py / 6a 都按位置传 keys）。"""
+        turn, move = self.read_keyboard_axes(keys, dt)
+        self.drive(turn, move, dt)
 
-    def poll_controls(self, keys):
-        """键盘 + 手柄合成输入；没有手柄时等价于 handle_input(keys)。"""
-        turn, move = self.read_keyboard_axes(keys)
+    def poll_controls(self, keys, dt=1.0 / FPS):
+        """键盘 + 手柄合成输入；没有手柄时等价于 handle_input(keys, dt)。"""
+        turn, move = self.read_keyboard_axes(keys, dt)
         if self.pad is not None:
             turn += self.pad.turn()
             move += self.pad.move()
-        self.drive(max(-1.0, min(1.0, turn)), max(-1.0, min(1.0, move)))
+        self.drive(max(-1.0, min(1.0, turn)), max(-1.0, min(1.0, move)), dt)
 
     # --- 射击 ---
     def muzzle_position(self):
@@ -1658,6 +1702,7 @@ def main():
 
     running = True
     clock = pygame.time.Clock()
+    dt = 1.0 / FPS          # 上一帧耗时（秒）；每帧末尾用 clock.tick() 实测刷新
 
     while running:
         # --- 事件 ---
@@ -1761,12 +1806,12 @@ def main():
                 if tank.ai is not None:
                     # 电脑坦克：决策 -> 走同一条 drive() 通道（转向符号不变）
                     tank.ai.update(tank, tank1 if tank is tank2 else tank2)
-                    tank.drive(tank.ai.turn(), tank.ai.move())
+                    tank.drive(tank.ai.turn(), tank.ai.move(), dt)
                     if tank.ai.want_fire:
                         try_fire(tank)
                 else:
                     # 键盘 + 手柄合成，无手柄时 = handle_input
-                    tank.poll_controls(keys)
+                    tank.poll_controls(keys, dt)
                     if tank.pad is not None and tank.pad.fire_edge():
                         try_fire(tank)
                     if coach is not None and tank is tank1:
@@ -1903,11 +1948,19 @@ def main():
         screen.blit(pad_hint, pad_hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                        SCREEN_HEIGHT - 20)))
 
-        # 血量数值 + 剩余命数（一排小方块，扣掉的变暗）
-        hp1 = small_font.render(f"HP {tank1.hp}", True, (200, 120, 120))
-        hp2 = small_font.render(f"HP {tank2.hp}", True, (120, 150, 220))
-        screen.blit(hp1, (12, 34))
-        screen.blit(hp2, (SCREEN_WIDTH - hp2.get_width() - 12, 34))
+        # 血量数值 + 炮口角度 / 瞄准残差 + 剩余命数（一排小方块，扣掉的变暗）
+        # ANG/ERR 是给玩家的直接反馈：键盘一格原来是 4°，现在点按是 1°，
+        # 有了 ERR 才知道自己到底差几度，而不是「按了没反应 / 怎么都对不上」。
+        for tank, is_left in ((tank1, True), (tank2, False)):
+            other = tank2 if tank is tank1 else tank1
+            dx, dy = other.pos.x - tank.pos.x, other.pos.y - tank.pos.y
+            err = _wrap_deg(math.degrees(math.atan2(dx, -dy)) - tank.angle)
+            color = (200, 120, 120) if is_left else (120, 150, 220)
+            text = small_font.render(
+                f"HP {tank.hp:3d}  ANG {tank.angle % 360:3.0f}  ERR {err:+5.1f}",
+                True, color)
+            screen.blit(text, (12, 34) if is_left
+                        else (SCREEN_WIDTH - text.get_width() - 12, 34))
         draw_lives(screen, tank1, 12, 54)
         draw_lives(screen, tank2,
                    SCREEN_WIDTH - 12 - lives_pips_width(), 54)
@@ -1943,7 +1996,11 @@ def main():
             screen.blit(tip, tip.get_rect(center=(SCREEN_WIDTH // 2, 74)))
 
         pygame.display.flip()
-        clock.tick(FPS)
+        # 实测帧间隔：掉帧（字体渲染 / F5 面板）时转向与车速保持真实时间一致。
+        # 首帧、拖窗口、配置面板暂停造成的异常间隔（<=0 或 >0.1s）按标准帧算，
+        # 免得一帧跳过几十度。
+        elapsed = clock.tick(FPS) / 1000.0
+        dt = elapsed if 0.0 < elapsed <= 0.1 else 1.0 / FPS
 
     for pad in pads:
         pad.close()

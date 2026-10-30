@@ -290,12 +290,24 @@ class Keys(dict):
         return self.get(k, False)
 
 
-# 6a 模拟量满偏 == 键盘满偏（右转 + 倒车，按键用 D/S）
+# 6a 键盘「按住到满舵」== 模拟量满偏（右转 + 倒车，按键用 D/S）
+#    键盘有起手加速段（TURN_FINE_GAIN -> 1.0，见模块顶部注释），先按住几帧
+#    把加速段走完，再比**同样一帧**的转角与位移——这才是两通道共同的物理。
 a = new_tank()
 b = new_tank()
+hold = Keys({pygame.K_d: True, pygame.K_s: True})
+for _ in range(int(g.TURN_RAMP_FRAMES) + 2):
+    b.handle_input(hold)
+a.angle, a.pos = b.angle, pygame.Vector2(b.pos)   # 对齐到同一状态再比一帧
 a.drive(turn=1.0, move=-1.0)
-b.handle_input(Keys({pygame.K_d: True, pygame.K_s: True}))
+b.handle_input(hold)
 assert almost(a.angle, b.angle) and a.pos.distance_to(b.pos) < 1e-9, (a.pos, b.pos)
+
+# 6a-2 点按一帧只转「满舵 × 起手增益」= 1°：这就是能停在任意角度上的来源
+tap = new_tank()
+tap.handle_input(Keys({pygame.K_d: True}))
+assert almost(tap.angle, g.TURN_FINE_GAIN * tap.turn_speed), tap.angle
+assert g.TURN_FINE_GAIN < 1.0 and g.TURN_RAMP_FRAMES > 0
 
 # 6b 长跑 600 帧，键盘路径与 poll_controls（无手柄）逐位一致
 c = new_tank()
@@ -309,12 +321,14 @@ assert c.pos.distance_to(d.pos) < 1e-9 and almost(c.angle, d.angle), (c.pos, d.p
 assert g.TANK_HALF <= c.pos.x <= g.SCREEN_WIDTH - g.TANK_HALF
 
 # 6c A/D 方向回归：A 左转（角度减小）、D 右转（角度增大）
+#    单帧只走起手增益那一档（点按微转），满舵转速见 6a
 left_t = new_tank()
 left_t.handle_input(Keys({pygame.K_a: True}))
-assert almost(left_t.angle, (360 - left_t.turn_speed) % 360), left_t.angle
+assert almost(left_t.angle,
+              (360 - g.TURN_FINE_GAIN * left_t.turn_speed) % 360), left_t.angle
 right_t = new_tank()
 right_t.handle_input(Keys({pygame.K_d: True}))
-assert almost(right_t.angle, right_t.turn_speed % 360), right_t.angle
+assert almost(right_t.angle, g.TURN_FINE_GAIN * right_t.turn_speed % 360), right_t.angle
 
 # 6c-2 几何校验（与贴图旋转符号解耦）：右转后炮口必须落在车身右侧
 assert right_t.muzzle_position().x > right_t.pos.x, right_t.muzzle_position()
