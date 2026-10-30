@@ -50,12 +50,21 @@ def counting_init(self, *a, **kw):
 g.Tank.__init__ = counting_init
 
 state = {"n": 0}
+# DAMAGE=10 => 10 发击毁一次；每 20 帧一发（冷却 18 帧），第 10 发命中即分出胜负
 FIRE_FRAMES = {2: [pygame.K_SPACE, pygame.K_RETURN],
                22: [pygame.K_SPACE, pygame.K_RETURN],
                42: [pygame.K_SPACE, pygame.K_RETURN],
                62: [pygame.K_SPACE, pygame.K_RETURN],
                82: [pygame.K_SPACE, pygame.K_RETURN],
-               140: [pygame.K_r]}   # 结束后按 R 重开
+               102: [pygame.K_SPACE, pygame.K_RETURN],
+               122: [pygame.K_SPACE, pygame.K_RETURN],
+               142: [pygame.K_SPACE, pygame.K_RETURN],
+               162: [pygame.K_SPACE, pygame.K_RETURN],
+               182: [pygame.K_SPACE, pygame.K_RETURN],
+               # 分出胜负后这两发必须被忽略（winner 不为 None 时不开火）
+               202: [pygame.K_SPACE, pygame.K_RETURN],
+               222: [pygame.K_SPACE, pygame.K_RETURN],
+               300: [pygame.K_r]}   # 结束后按 R 重开
 
 
 def fake_get():
@@ -64,7 +73,7 @@ def fake_get():
     evts = []
     for key in FIRE_FRAMES.get(n, []):
         evts.append(pygame.event.Event(pygame.KEYDOWN, key=key))
-    if n >= 230:
+    if n >= 380:
         evts.append(pygame.event.Event(pygame.QUIT))
     return evts
 

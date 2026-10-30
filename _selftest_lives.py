@@ -10,6 +10,7 @@
 运行：SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_lives.py
 """
 
+import math
 import os
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -23,6 +24,23 @@ import tank_game as g
 g.MAX_LIVES = 2
 g.RESPAWN_DELAY = 10
 g.SPAWN_INVULN = 6
+
+# 主场景只关心「掉命 → 倒计时 → 满血复活 → 无敌 → 命尽分胜负」这条流程，
+# 所以把「离对手最远的角」打桩成固定回出生点：否则复活后 P2 会跑到别的角，
+# P1 的固定弹道就打不中第二条命了。最远角逻辑由 _selftest.py 的 [6c] 覆盖，
+# 端到端版本见文件末尾的 far_respawn_scenario()。
+_real_safe_respawn = g.safe_respawn_point
+
+
+def fixed_respawn(opponent, fallback=None):
+    """打桩：固定回 fallback 点，朝向仍指向对手。"""
+    if opponent is None or fallback is None:
+        return _real_safe_respawn(opponent, fallback)
+    dx, dy = opponent.pos.x - fallback.x, opponent.pos.y - fallback.y
+    return pygame.Vector2(fallback), math.degrees(math.atan2(dx, -dy)) % 360.0
+
+
+g.safe_respawn_point = fixed_respawn
 
 # 让两台坦克面对面站在 100px 距离上，炮口互指；出生点也跟着改，
 # 这样复活后仍然在同一条射击线上（重开/复活都回这里）
@@ -39,6 +57,9 @@ def patched_init(self, x, y, color, controls, **kw):
         self.angle = 180      # 朝下
     self.spawn_point = pygame.Vector2(self.pos)
     self.spawn_angle = self.angle
+    # 复活点默认跟随出生点（main() 掉命时才会改成「离对手最远的角」）
+    self.respawn_point = pygame.Vector2(self.pos)
+    self.respawn_angle = self.angle
 
 
 g.Tank.__init__ = patched_init
@@ -100,10 +121,29 @@ class RecFont:
 
 pygame.font.SysFont = lambda *a, **kw: RecFont(real_sysfont(*a, **kw))
 
-# P1 每 20 帧打一枪：5 发击毁一次，两轮共 10 发；
-# 202 之后的两枪是「回合已结束」的探针，应该被完全忽略。
-SHOT_FRAMES = (2, 22, 42, 62, 82, 122, 142, 162, 182, 202, 240, 260)
-QUIT_FRAME = 320
+# 有汉字字体时游戏走的是 load_font() -> ScreenFont(pygame.freetype)，
+# 根本不经过 pygame.font.SysFont；只包 SysFont 会漏掉屏幕上的所有文案
+# （这个测试之前就是这么漏掉了胜负提示）。所以把 load_font 也包一层。
+real_load_font = g.load_font
+_rec_fonts = {}
+
+
+def recording_load_font(size, bold=False):
+    font = real_load_font(size, bold)
+    key = id(font)
+    if key not in _rec_fonts:
+        _rec_fonts[key] = RecFont(font)
+    return _rec_fonts[key]
+
+
+g.load_font = recording_load_font
+
+# P1 每 20 帧打一枪：10 发击毁一次（DAMAGE=10），两轮共 20 发；
+# 最后两枪是「回合已结束」的探针，应该被完全忽略。
+SHOT_FRAMES = (2, 22, 42, 62, 82, 102, 122, 142, 162, 182,        # 第 1 条命
+               232, 252, 272, 292, 312, 332, 352, 372, 392, 412,  # 第 2 条命
+               450, 470)                                          # 探针
+QUIT_FRAME = 560
 frame = {"i": 0}
 
 
@@ -145,8 +185,8 @@ assert abs(r["pos"][0] - 200) < 1e-6 and abs(r["pos"][1] - 200) < 1e-6, r
 
 # 复活无敌：第 2 轮的第一发子弹在这种时间轴上可能正好撞上无敌窗口，
 # 所以只要求「第二次被击毁确实发生了」，且两次击毁之间的间隔 > 复活延迟。
-first_death_fire = fires[4][0]
-second_death_fire = fires[9][0]
+first_death_fire = fires[9][0]
+second_death_fire = fires[19][0]
 assert second_death_fire - first_death_fire > g.RESPAWN_DELAY, fires
 
 wins = [t for _, t in texts if "wins!" in t or "WINS!" in t]
@@ -157,7 +197,7 @@ win_frame = min(f for f, t in texts if "wins!" in t)
 # 回合结束后（探针两枪）不再有任何开火
 late = [f for f, _ in fires if f > win_frame]
 assert not late, f"回合结束后不该还能开火：{late}"
-assert max(f for f, _ in fires) == SHOT_FRAMES[9] + 1, [f for f, _ in fires]
+assert max(f for f, _ in fires) == SHOT_FRAMES[19] + 1, [f for f, _ in fires]
 
 # HUD 命数：两种极端值都能画（0 条命 / 满命）
 surf = pygame.Surface((g.SCREEN_WIDTH, g.SCREEN_HEIGHT))
@@ -170,3 +210,47 @@ for n in range(g.MAX_LIVES + 1):
 assert g.lives_pips_width() > 0
 
 print("LIVES OK：2 条命 -> 掉命复活（满血/出生点/无敌）-> 命尽分胜负 -> 停火")
+
+
+# ------------------------------------------------- 额外场景：真实复活点
+# 把 safe_respawn_point 还原成真货：掉一条命后，P2 必须出现在「离对手最远的角」，
+# 而不是固定的开局角（否则等于送死：边线挡着退不了，1 秒无敌到点就挨枪）。
+g.safe_respawn_point = _real_safe_respawn
+deaths.clear()
+respawns.clear()
+fires.clear()
+texts.clear()
+FAR_SHOT_FRAMES = (2, 22, 42, 62, 82, 102, 122, 142, 162, 182)
+frame["i"] = 0
+
+
+def fake_get_far():
+    i = frame["i"]
+    frame["i"] += 1
+    evts = []
+    if i in FAR_SHOT_FRAMES:
+        evts.append(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
+    if i >= 260:
+        evts.append(pygame.event.Event(pygame.QUIT))
+    return evts
+
+
+pygame.event.get = fake_get_far
+try:
+    # main() 退出时会 pygame.quit()（视频系统被拆掉），再跑一局要先重新初始化，
+    # 并把模块级的 screen 换成新建的表面（main() 里 fill/blit 用的是这个全局）。
+    pygame.init()
+    g.screen = pygame.display.set_mode((g.SCREEN_WIDTH, g.SCREEN_HEIGHT))
+    g.main()
+except SystemExit as e:
+    print("（最远角场景）主循环正常退出，代码", e.code)
+
+assert len(deaths) == 1 and len(respawns) == 1, (deaths, respawns)
+far = respawns[0]
+opp = pygame.Vector2(200, 300)                     # P1 在本测试里的固定站位
+corners = [pygame.Vector2(c) for c in g.RESPAWN_CORNERS]
+pos = pygame.Vector2(far["pos"])
+assert any(pos.distance_to(c) < 1e-6 for c in corners), far
+assert abs(pos.distance_to(opp) - max(c.distance_to(opp) for c in corners)) < 1e-6, far
+assert far["pos"] != (200, 200), "不该回到固定出生角"
+print("FAR_OK：掉命后在离对手最远的角复活", far["pos"])

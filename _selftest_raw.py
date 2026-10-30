@@ -214,7 +214,7 @@ try:
 except SystemExit:
     pass
 print("RAW_MAIN fired =", len(seen["fire"]), "tanks_created =", seen["tanks"])
-assert len(seen["fire"]) >= 5, "原始手柄开火应该能击毁对手（5 发）"
+assert len(seen["fire"]) >= 10, "原始手柄开火应该能击毁对手（10 发）"
 assert set(seen["fire"]) == {g.RED}, "只有 P1 绑手柄，不能串到 P2"
 assert seen["tanks"] == 2, "没按 Start，不应重开"
 print("[5] main() 端到端 OK：非标准手柄能绑 P1、开火、击毁")

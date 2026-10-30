@@ -115,14 +115,15 @@ def pad_main_scenario():
     g.sdl2_controller = FakeSDL2([fc1, fc2])
 
     frame = {"i": 0}
+    # 10 发击毁一次（DAMAGE=10），每 20 帧按一下 A：约 180 帧打完，200 帧左右分胜负
 
     def fake_get():
         i = frame["i"]
         frame["i"] += 1
         # 每 20 帧按一下 A（上升沿）→ 冷却刚好够再开火
         fc1.buttons[pygame.CONTROLLER_BUTTON_A] = (i % 20) < 2
-        fc1.buttons[pygame.CONTROLLER_BUTTON_START] = i in (150, 151)
-        if i >= 220:
+        fc1.buttons[pygame.CONTROLLER_BUTTON_START] = i in (260, 261)
+        if i >= 340:
             return [pygame.event.Event(pygame.QUIT)]
         return []
 
@@ -133,7 +134,7 @@ def pad_main_scenario():
         pass
     print("PAD_MAIN fired =", len(seen["fire"]),
           "tank_colors =", seen["fire"], "tanks_created =", seen["tanks"])
-    assert len(seen["fire"]) >= 5, seen
+    assert len(seen["fire"]) >= 10, seen
     assert set(seen["fire"]) == {g.RED}, "只有 P1 的手柄开火，不能串到 P2"
     assert seen["tanks"] == 4, "初始 2 + 按 Start 重开 2"
     print("PAD_MAIN OK：手柄开火→击毁→Start 重开")

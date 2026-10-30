@@ -231,16 +231,25 @@ TURN_LEFT = -1.0    # 逆时针 = 画面左转 = 角度减小
 
 # 战斗参数
 MAX_HP = 100
-DAMAGE = 20            # 每发扣 20 血 => 5 发击毁一次
+DAMAGE = 10            # 每发扣 10 血 => 10 发击毁一次（一条命约 7 秒）
 # 生命值：每台坦克 5 条命。血条被打空算「被击毁一次」，扣一条命；
 # 还有命就在出生点复活，命扣完才算输掉这一局。
 MAX_LIVES = 5
 RESPAWN_DELAY = 60     # 被击毁到复活的等待帧数（60 帧 = 1 秒）
-SPAWN_INVULN = 60      # 复活后的无敌帧数（1 秒），避免刚出生就被补枪
+SPAWN_INVULN = 120     # 复活后的无敌帧数（2 秒），避免刚出生就被补枪
 FIRE_COOLDOWN = 18     # 冷却帧数，约 0.3 秒
 BULLET_SPEED = 9.0
 BULLET_RADIUS = 4
+# 命中判定用「车体中心 + 子弹中心」的圆，而不是旋转后贴图的包围盒：
+# 44px 贴图转到 45° 时包围盒会涨到 62×62（再外扩子弹就是 78×78），
+# 视觉上明明擦着车边飞过去也算命中。半径取 TANK_HALF - 4 = 18，
+# 加上子弹半径 4 => 中心距 22px 以内算命中（车体视觉半宽 13 / 半高 17）。
+HIT_RADIUS = TANK_HALF - 4
 MUZZLE_OFFSET = TANK_HALF + 3
+# 复活点候选：四个角，哪个离对手最远就去哪（全是远离边线的安全位置）
+RESPAWN_CORNERS = ((120, 120), (SCREEN_WIDTH - 120, 120),
+                   (120, SCREEN_HEIGHT - 120),
+                   (SCREEN_WIDTH - 120, SCREEN_HEIGHT - 120))
 
 
 # --- 单人 vs 电脑参数 ---
@@ -594,6 +603,25 @@ def _deadzone(v, dz=PAD_DEADZONE):
     return max(-1.0, min(1.0, (abs(v) - dz) / (1.0 - dz))) * sign
 
 
+def safe_respawn_point(opponent, fallback=None):
+    """挑一个离对手最远的复活角，返回 (Vector2 位置, 朝向角度)。
+
+    固定回出生角的问题是「1 秒无敌一到点就顶着边线挨枪」：出生点永远在
+    角落，对手早就在 120–280px 内架好枪。改成四个角里挑离对手最远的那一个，
+    朝向自动指向对手（atan2(dx, -dy)，与 0 朝上、顺时针为正一致），复活的人
+    一睁眼就对着威胁方向，至少有一段距离可以重新组织。
+    """
+    if opponent is None:
+        point = pygame.Vector2(fallback if fallback is not None
+                               else RESPAWN_CORNERS[0])
+        return point, 0.0
+    point = max((pygame.Vector2(c) for c in RESPAWN_CORNERS),
+                key=lambda p: p.distance_squared_to(opponent.pos))
+    dx = opponent.pos.x - point.x
+    dy = opponent.pos.y - point.y
+    return point, math.degrees(math.atan2(dx, -dy)) % 360.0
+
+
 class Tank(pygame.sprite.Sprite):
     """俯视角坦克：车体 + 履带 + 炮塔 + 炮管，角度 0 表示朝上。"""
 
@@ -610,6 +638,9 @@ class Tank(pygame.sprite.Sprite):
         # 出生点：复位 / 掉命复活都回到这里（朝向也回到出生朝向）
         self.spawn_point = pygame.Vector2(x, y)
         self.spawn_angle = self.angle
+        # 复活点：默认等于出生点；main() 会在掉命时改成「离对手最远的角」
+        self.respawn_point = pygame.Vector2(x, y)
+        self.respawn_angle = self.angle
 
         self.hp = MAX_HP
         self.lives = MAX_LIVES     # 剩余命数，扣到 0 才算输
@@ -743,9 +774,13 @@ class Tank(pygame.sprite.Sprite):
         return self.lives > 0
 
     def respawn(self):
-        """在出生点复活：满血、清冷却、给一小段无敌。"""
-        self.pos.update(self.spawn_point)
-        self.angle = self.spawn_angle
+        """在复活点复活：满血、清冷却、给一段无敌。
+
+        复活点默认就是出生点；main() 掉命时会先把它改成离对手最远的角，
+        所以直接调 respawn() 的行为和以前完全一致。
+        """
+        self.pos.update(self.respawn_point)
+        self.angle = self.respawn_angle
         self.hp = MAX_HP
         self.alive = True
         self.cooldown = 0
@@ -796,6 +831,14 @@ class Bullet(pygame.sprite.Sprite):
         if not (-30 <= self.pos.x <= SCREEN_WIDTH + 30
                 and -30 <= self.pos.y <= SCREEN_HEIGHT + 30):
             self.kill()
+
+    def touches(self, tank):
+        """这颗子弹是否命中 tank（圆形判定，与车体朝向无关）。
+
+        全工程唯一的命中判定出处：main() 和所有试跑 / 测试脚本都调它，
+        不再各自写一份 `rect.colliderect(tank.rect)`。
+        """
+        return self.pos.distance_to(tank.pos) <= HIT_RADIUS + BULLET_RADIUS
 
 
 class Explosion(pygame.sprite.Sprite):
@@ -1344,7 +1387,7 @@ def main():
           f"P2 开火 = {fire_names['p2'].upper()}，手柄开火 = {pad_fire_label()}"
           f"（配置文件 {KEYS_CONFIG_PATH}）")
     print(f"[rule] 每人 {MAX_LIVES} 条命：血条打空算被击毁一次，"
-          f"{RESPAWN_DELAY / FPS:.1f} 秒后出生点复活，"
+          f"{RESPAWN_DELAY / FPS:.1f} 秒后在离对手最远的角复活，"
           f"复活后 {SPAWN_INVULN / FPS:.1f} 秒无敌；命扣完才算输")
     if COACH_ENABLED:
         print(f"[coach] 1p 模式下每局自动评估：局末打印评分/纠正/下一局目标，"
@@ -1747,7 +1790,7 @@ def main():
                 for tank in (tank1, tank2):
                     if tank is bullet.owner or not tank.alive:
                         continue
-                    if bullet.rect.colliderect(tank.rect):
+                    if bullet.touches(tank):
                         hit_point = pygame.Vector2(bullet.pos)
                         bullet.kill()
                         explosions.add(Explosion(hit_point.x, hit_point.y, YELLOW, 26, 14))
@@ -1768,6 +1811,12 @@ def main():
                                 # 放在 lose_life() 之前：最后一条命也算进统计
                                 coach.on_death(victim_is_human=(tank is tank1))
                             if tank.lose_life():
+                                # 复活点改成离对手最远的角，并朝向对手
+                                point, angle = safe_respawn_point(
+                                    tank1 if tank is tank2 else tank2,
+                                    tank.respawn_point)
+                                tank.respawn_point = point
+                                tank.respawn_angle = angle
                                 print(f"[life] {tank_label(tank)} 被击毁，"
                                       f"剩 {tank.lives} 条命，"
                                       f"{RESPAWN_DELAY / FPS:.1f} 秒后复活")
@@ -1801,11 +1850,11 @@ def main():
                                    (round(tank.pos.x), round(tank.pos.y)),
                                    TANK_HALF + 6, 2)
             elif not tank.alive and winner is None and tank.respawn_timer > 0:
-                # 等待复活：出生点上显示倒计时
+                # 等待复活：在**实际复活点**上显示倒计时（掉命时被改过）
                 secs = tank.respawn_timer / FPS
                 tip = small_font.render(f"RESPAWN {secs:.1f}s", True, tank.color)
-                world.blit(tip, tip.get_rect(center=(round(tank.spawn_point.x),
-                                                     round(tank.spawn_point.y))))
+                world.blit(tip, tip.get_rect(center=(round(tank.respawn_point.x),
+                                                     round(tank.respawn_point.y))))
 
         screen.fill(BLACK)
         if shake > 0:

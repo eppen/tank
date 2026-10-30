@@ -61,7 +61,7 @@ def sim(ai, tank, target, frames, bullets=None, hits=None):
                 bullets.add(tank.fire())
         for b in bullets.sprites():
             b.update()
-            if b.rect.colliderect(target.rect):
+            if b.touches(target):
                 b.kill()
                 destroyed = target.take_hit(g.DAMAGE)
                 if hits is not None:
@@ -141,7 +141,7 @@ for _ in range(3000):
     for b in bul.sprites():
         b.update()
         for tk in (t1, t2):
-            if tk is not b.owner and tk.alive and b.rect.colliderect(tk.rect):
+            if tk is not b.owner and tk.alive and b.touches(tk):
                 b.kill()
                 tk.take_hit(g.DAMAGE)
                 break

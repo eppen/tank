@@ -50,7 +50,7 @@ ERROR_BANDS = (
 
 # 基准线：用来把本局换算成 0-100 的分项分数（达到基准 = 100 分）
 BENCH_ACCURACY = 0.55        # 命中率 55% 以上算满分
-BENCH_HITS_PER_SEC = 0.45    # 有效命中 0.45 发/秒 以上算满分（约 11 秒击毁一次）
+BENCH_HITS_PER_SEC = 0.45    # 有效命中 0.45 发/秒 以上算满分（10 发击毁 ≈ 22 秒一次）
 BENCH_ENEMY_ACC = 0.35       # 电脑命中率低于 35% 不扣生存分
 
 GRADE_STEPS = ((85, "S"), (75, "A"), (60, "B"), (45, "C"), (0, "D"))
@@ -427,7 +427,8 @@ class BattleCoach:
                 "title_en": "Shooting the CPU spawn shield",
                 "evidence": f"{m['shield_hits']} 发打在它复活后的 "
                             f"{self.invuln_frames / self.fps:.0f} 秒无敌里，一点血都没掉。",
-                "fix": "电脑刚复活时停火，等白环消失；这 1 秒用来拉距离或换角度。",
+                "fix": f"电脑刚复活时停火，等白环消失；这 "
+                       f"{self.invuln_frames / self.fps:.0f} 秒用来拉距离或换角度。",
                 "fix_en": "Hold fire while its white ring is up; use that second to "
                           "reposition instead.",
             })
@@ -448,14 +449,18 @@ class BattleCoach:
             })
 
         if m["own_invuln_windows"] >= 1 and m["shots_own_invuln"] == 0:
+            # 无敌期能打几发、在第几帧打，都跟着 invuln_frames 走，别写死
+            cadence = "/".join(str(i * self.fire_cooldown)
+                               for i in
+                               range(self.invuln_frames // self.fire_cooldown + 1))
             out.append({
                 "code": "own_invuln", "severity": 62,
-                "title": "浪费了自己的无敌 1 秒",
+                "title": f"浪费了自己的无敌 {self.invuln_frames / self.fps:.0f} 秒",
                 "title_en": "Wasted your own spawn shield",
                 "evidence": f"你复活了 {m['own_invuln_windows']} 次，无敌期间一发都没打。",
                 "fix": f"复活瞬间就朝电脑开火：{self.invuln_frames} 帧够打 "
                        f"{self.invuln_frames // self.fire_cooldown + 1} 发"
-                       f"（第 0/18/36/54 帧各一发）。",
+                       f"（第 {cadence} 帧各一发）。",
                 "fix_en": f"Start shooting the moment you respawn: the "
                           f"{self.invuln_frames}-frame shield fits "
                           f"{self.invuln_frames // self.fire_cooldown + 1} shots.",
@@ -854,7 +859,7 @@ def history_trend_text(hist, n=5):
         text += _t(f"，最佳 {best.get('score', 0)} 分（{best.get('grade', '?')}）",
                    f", best {best.get('score', 0)} ({best.get('grade', '?')})")
     if len(accs) >= 2:
-        text += _t("，命中率 ", ", accuracy ") + " -> ".join(
+        text += _t("，命中率 ", ", accuracy ") + _t(" → ", " -> ").join(
             f"{a*100:.0f}%" for a in accs)
     return text
 

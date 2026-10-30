@@ -149,8 +149,9 @@ if has_cjk:
 print("[5] 报告卡能绘制，行首 ! / > 标记可用于上色")
 
 # ---------------------------------------------------------------- 6) 端到端
-# 独立进程里再验一次：报告卡上的每个汉字都画出不同字形（没有方块）
-if has_cjk:
+# 独立进程里再验一次：报告卡上的每个汉字都画出不同字形（没有方块）。
+# 必须只在 __main__ 下跑：子进程会 `import _selftest_font`，否则会无限递归。
+def end_to_end_probe():
     here = os.path.dirname(os.path.abspath(__file__))
     probe = (
         "import os; os.environ.setdefault('SDL_VIDEODRIVER','dummy')\n"
@@ -170,4 +171,8 @@ if has_cjk:
     assert total > 0 and distinct == total, f"{total} 个汉字只画出 {distinct} 种字形"
     print(f"[6] 端到端：报告卡里 {total} 个汉字各画出不同字形（无方块）")
 
-print("字体测试全部通过：默认字体无汉字 / 自动选字体 / 中英兜底 / 卡片绘制 / 端到端")
+
+if __name__ == "__main__":
+    if has_cjk:
+        end_to_end_probe()
+    print("字体测试全部通过：默认字体无汉字 / 自动选字体 / 中英兜底 / 卡片绘制 / 端到端")

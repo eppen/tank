@@ -130,7 +130,7 @@ def play(policy, seed, max_frames=9000):
             for tank in (h, cpu):
                 if tank is bullet.owner or not tank.alive:
                     continue
-                if bullet.rect.colliderect(tank.rect):
+                if bullet.touches(tank):
                     shielded = tank.invuln > 0
                     bullet.kill()
                     coach.on_hit(by_human=(bullet.owner is h),
