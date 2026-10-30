@@ -22,6 +22,9 @@ t2.hp = 60
 t2.flash = 6
 t1.lives = 3          # 预览里顺便展示命数 HUD（红 3 条、蓝 1 条）
 t2.lives = 1
+# 掩体：与游戏内同一份布局（build_obstacles 是唯一出处），并挂到坦克上
+obstacles = g.build_obstacles()
+t1.obstacles = t2.obstacles = tuple(o.rect for o in obstacles)
 tanks.add(t1, t2)
 for t in tanks:
     t.sync_image()
@@ -32,6 +35,7 @@ for _ in range(6):
     exps.update()
 
 g.draw_background(world)
+obstacles.draw(world)      # 与游戏内绘制顺序一致：背景 -> 掩体 -> 坦克
 tanks.draw(world)
 bullets.draw(world)
 exps.draw(world)

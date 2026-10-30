@@ -325,7 +325,9 @@ def coach_main_scenario():
     def fake_get():
         i = seen["frame"]
         seen["frame"] += 1
-        if i >= 1500:
+        # 帧数上限：AI 要打光人类 5 条命。没有掩体时约 1590 帧；有了掩体，
+        # 电脑每次都要绕开方块重新找射界，实测约 1830 帧，所以留到 3000。
+        if i >= 3000:
             return [pygame.event.Event(pygame.QUIT)]
         return list(events_at.get(i, []))
 

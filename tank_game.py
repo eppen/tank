@@ -263,6 +263,24 @@ RESPAWN_CORNERS = ((120, 120), (SCREEN_WIDTH - 120, 120),
                    (120, SCREEN_HEIGHT - 120),
                    (SCREEN_WIDTH - 120, SCREEN_HEIGHT - 120))
 
+# --- 障碍物（掩体）：挡车、挡子弹、挡住视线 ---
+# 布局是写死的常量（不随机），因为截图、自测和 1p/2p 公平性都依赖确定性。
+# 改布局必须同时满足三条硬约束（`_selftest_walls.py [1]` 逐条断言）：
+#   1) 180° 旋转对称：每块绕屏幕中心转 180° 后仍在集合里。否则两个出生角的
+#      主场优势不一样，1p 模式下玩家会吃布局的亏。
+#   2) 不压出生点 / 复活角：到 RESPAWN_CORNERS 的距离 >= TANK_HALF + 40。
+#      否则复活瞬间车体就卡在方块里。
+#   3) 不挡两条出生对角线：开局第一枪的视线必须是通的，否则必须先进攻绕半圈。
+# 另外 min(w, h) 必须 >= BULLET_SPEED * 2：子弹一帧走 9px，方块太薄会被穿过。
+# TANK_WALLS=0 整体关掉障碍物（和 TANK_COACH=0 同风格），用来排查
+# 「是不是墙导致的」问题。
+OBSTACLE_ENABLED = os.environ.get("TANK_WALLS", "1") != "0"
+OBSTACLE_SIZE = 56
+OBSTACLE_RECTS = ((240, 120, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                  (240, 300, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                  (504, 244, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                  (504, 424, OBSTACLE_SIZE, OBSTACLE_SIZE))
+
 
 # --- 单人 vs 电脑参数 ---
 # 三档难度只调「瞄得多准、多快下决心」，不改变任何物理规则（速度、转向速率、
@@ -281,6 +299,12 @@ AI_SKILLS = {
 AI_SKILL_ORDER = ("easy", "normal", "hard")
 AI_FIRE_RANGE = 560.0     # 再远就是子弹先出屏，白送冷却，不开火
 AI_TURN_FULL_ERR = 22.0   # 角度误差达到 22 度就打满舵
+# 距离控制的迟滞带宽（像素）：倒车要一直退到 keep_min + 这个值才重新往前。
+# 没有它的话，位置刚好落在 keep_min 上会「退一帧→太远→进一帧→太近」地无限
+# 抖动（一帧 1.9px 前 / 4.4px 后），把双方的位置变成互相喂的噪声：AI 的提前
+# 量被这点抖动带偏，于是打着转瞄不准，两车就顶着原地磨（加了掩体后实测能磨
+# 9000 帧）。带宽给 30px ≈ 坦克半宽多一点的视觉容差，玩家看不出来。
+AI_KEEP_HYST = 30.0
 
 
 # --- 手柄参数 ---
@@ -634,6 +658,113 @@ def safe_respawn_point(opponent, fallback=None):
     return point, math.degrees(math.atan2(dx, -dy)) % 360.0
 
 
+# --- 障碍物几何：全工程唯一的判断出处 ---
+# 车体碰撞（Tank.drive）、子弹撞墙（main）、AI 探路（TankAI.update）都只走
+# 下面这几个函数，不再各自写一份 colliderect / 线段求交。
+# obstacles 可以是 pygame.Rect 的序列，也可以是 Obstacle 精灵组（取 .rect）。
+
+def _closest_point(pos, rect):
+    """矩形上离 pos 最近的点（pos 落在矩形内时就是 pos 自己）。"""
+    return pygame.Vector2(min(max(pos.x, rect.left), rect.right),
+                          min(max(pos.y, rect.top), rect.bottom))
+
+
+def obstacle_at(pos, obstacles, radius=0.0):
+    """返回第一个与「圆心 pos + 半径 radius」相交的障碍物矩形，没有则 None。
+
+    radius=0 表示「点是否在方块里」。内部点（最近点 = 自己）也算相交，
+    所以哪怕有一帧穿进了方块里也能被发现。
+    """
+    if not obstacles:
+        return None
+    for item in obstacles:
+        rect = item.rect if hasattr(item, "rect") else item
+        near = _closest_point(pos, rect)
+        if near.distance_squared_to(pos) <= radius * radius:
+            return rect
+    return None
+
+
+def resolve_obstacles(pos, radius, obstacles, passes=3):
+    """把圆心 pos 推出所有障碍物（就地修改 Vector2），返回是否发生过推移。
+
+    推出方向是「圆-矩最小穿透」：圆心在矩形外侧时沿最近点法线推到刚好相切，
+    在矩形内部时按到四条边的最短距离推到最近的那条边外。所以斜着顶墙时只有
+    垂直墙面的那一维被推回、沿墙分量原样保留——看上去就是贴着墙滑行，
+    而不是撞上就粘死。passes>1 用来处理「被夹在两个方块之间」的情况。
+    """
+    if not obstacles:
+        return False
+    moved = False
+    for _ in range(max(1, int(passes))):
+        pushed = False
+        for item in obstacles:
+            rect = item.rect if hasattr(item, "rect") else item
+            if (pos.x + radius <= rect.left or pos.x - radius >= rect.right
+                    or pos.y + radius <= rect.top or pos.y - radius >= rect.bottom):
+                continue        # 根本没碰上，省掉开方
+            near = _closest_point(pos, rect)
+            delta = pos - near
+            dist = delta.length()
+            if dist > 1e-9:
+                pos.update(near.x + delta.x / dist * radius,
+                           near.y + delta.y / dist * radius)
+            else:
+                # 圆心已在矩形内（或正压在边上）：推向最近的那条边
+                left, right = pos.x - rect.left, rect.right - pos.x
+                top, bottom = pos.y - rect.top, rect.bottom - pos.y
+                edge = min(left, right, top, bottom)
+                if edge == left:
+                    pos.x = rect.left - radius
+                elif edge == right:
+                    pos.x = rect.right + radius
+                elif edge == top:
+                    pos.y = rect.top - radius
+                else:
+                    pos.y = rect.bottom + radius
+            pushed = moved = True
+        if not pushed:
+            break
+    return moved
+
+
+def has_line_of_sight(a, b, obstacles):
+    """a 到 b 的线段有没有被障碍物挡住（全工程唯一的视线出处）。
+
+    用 Rect.clipline 求线段与矩形的交集：空元组 = 没穿过。线段端点落在方块
+    内、或正好擦着方块边角，都算「被挡住」（保守口径，AI 不会隔墙开枪）。
+    """
+    if not obstacles:
+        return True
+    for item in obstacles:
+        rect = item.rect if hasattr(item, "rect") else item
+        if rect.clipline((a.x, a.y), (b.x, b.y)):
+            return False
+    return True
+
+
+def tank_blocked_ahead(tank, move, obstacles, reach=2.0, angle=None):
+    """按给定朝向（默认车头）前进会不会马上顶到墙 / 出场地。
+
+    口径沿用旧版 TankAI._would_leave_screen（沿朝向探 speed*move + 2px，
+    看车体半径的位置是否越界），只是多查一次障碍物；AI 探路与「贴墙停车」
+    共用这一份判定。
+
+    障碍物这一半要用 TANK_HALF - 1 而不是 TANK_HALF：车静止时正好停在
+    「距墙面 TANK_HALF」上（resolve_obstacles 就是推到相切），拿 TANK_HALF
+    去比，贴着墙的所有方向（包括平行、背离）都会被判成「挡」——车于是既
+    不敢前进也不敢转，只能原地抖。少 1px 就等于「只有真的会往里挤才算挡」。
+    """
+    rad = math.radians(tank.angle if angle is None else angle)
+    step = tank.speed * max(0.0, move) + reach
+    probe = pygame.Vector2(tank.pos.x + math.sin(rad) * step,
+                           tank.pos.y - math.cos(rad) * step)
+    if not (TANK_HALF <= probe.x <= SCREEN_WIDTH - TANK_HALF
+            and TANK_HALF <= probe.y <= SCREEN_HEIGHT - TANK_HALF):
+        return True
+    return obstacle_at(probe, obstacles, TANK_HALF - 1.0) is not None
+
+
 class Tank(pygame.sprite.Sprite):
     """俯视角坦克：车体 + 履带 + 炮塔 + 炮管，角度 0 表示朝上。"""
 
@@ -643,6 +774,10 @@ class Tank(pygame.sprite.Sprite):
         self.controls = controls  # forward/back/left/right/fire -> keycode
         self.pad = None           # 由 main() 绑定 Gamepad；None = 只用键盘
         self.ai = None            # 单人模式下由 main() 绑定 TankAI；None = 人类
+        # 场地里的障碍物（Rect 序列或 Obstacle 精灵组）。默认空 = 无障碍物，
+        # 所有 _selftest*/沙盘脚本直接 Tank(...) 时行为与加入障碍物之前完全一致；
+        # main() / _preview.py 会显式挂上。
+        self.obstacles = ()
         self.speed = speed
         self.turn_speed = turn_speed
         self.angle = 0.0  # 0 = 朝上，顺时针为正
@@ -710,6 +845,10 @@ class Tank(pygame.sprite.Sprite):
           - dt 默认 1/60 时与旧版逐位一致（所有自测脚本 / 试跑脚本都不传 dt）；
           - main() 把 clock.tick() 实测的帧间隔传进来，掉帧（字体渲染、评估
             面板）时转速与车速不再跟着变慢，手感不再随帧率漂移。
+
+        障碍物：位置更新后先 resolve_obstacles() 把车体推出方块，再做屏幕边界
+        夹取（顺序固定：先障碍物、后边界）。推出是沿最小穿透方向，所以斜着顶墙
+        会自然地贴着墙滑行而不是粘住；转向不改变位置，所以原地转向不会被卡住。
         """
         scale = dt * FPS          # 1.0 = 标准帧；掉帧 > 1，超快帧 < 1
         if turn:
@@ -724,6 +863,9 @@ class Tank(pygame.sprite.Sprite):
             direction = 1.0 if move > 0 else -1.0
             self.pos.x += math.sin(rad) * step * direction
             self.pos.y -= math.cos(rad) * step * direction
+
+        # 障碍物碰撞：沿最小穿透方向把车体推出方块（撞墙 = 沿墙滑行）
+        resolve_obstacles(self.pos, TANK_HALF, self.obstacles)
 
         # 限制在屏幕内
         self.pos.x = max(TANK_HALF, min(SCREEN_WIDTH - TANK_HALF, self.pos.x))
@@ -919,6 +1061,43 @@ class Explosion(pygame.sprite.Sprite):
                            max(1, int(radius * 0.55)), width=max(1, int(2 * (1 - t)) + 1))
         self.image = surf
         self.rect = surf.get_rect(center=(round(self.pos.x), round(self.pos.y)))
+
+
+class Obstacle(pygame.sprite.Sprite):
+    """场地里的固定掩体方块：挡车、挡子弹、挡住视线（不可破坏、不重生）。
+
+    贴图在构造时一次性画好，绘制直接用 Group.draw()，主循环里零额外代码。
+    rect 就是碰撞用的矩形（`obstacle_at` / `resolve_obstacles` / `clipline`
+    都直接用它的几何，不依赖贴图）。
+    """
+
+    def __init__(self, spec):
+        super().__init__()
+        self.rect = pygame.Rect(*spec)
+        surf = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+        body = surf.get_rect()
+        pygame.draw.rect(surf, (46, 46, 56), body, border_radius=5)
+        # 左上亮、右下暗：给方块一点厚度感，跟 DEMO 里的坦克配色一致
+        pygame.draw.line(surf, (88, 88, 106), (5, 5), (body.width - 6, 5), 2)
+        pygame.draw.line(surf, (88, 88, 106), (5, 5), (5, body.height - 6), 2)
+        pygame.draw.line(surf, (26, 26, 32), (5, body.height - 5),
+                         (body.width - 6, body.height - 5), 2)
+        pygame.draw.line(surf, (26, 26, 32), (body.width - 5, 5),
+                         (body.width - 5, body.height - 5), 2)
+        pygame.draw.rect(surf, GRAY, body, width=2, border_radius=5)
+        self.image = surf
+
+
+def build_obstacles():
+    """按 OBSTACLE_RECTS 建出掩体；TANK_WALLS=0 时返回空组（= 无障碍物）。
+
+    只在开局建一次：R / START 重开不重建，布局永远一致（截图与自测都靠这个）。
+    """
+    group = pygame.sprite.Group()
+    if OBSTACLE_ENABLED:
+        for spec in OBSTACLE_RECTS:
+            group.add(Obstacle(spec))
+    return group
 
 
 class RawController:
@@ -1185,6 +1364,15 @@ class TankAI:
         self._last_target_id = None
         self._last_target_pos = None
         self._target_vel = pygame.Vector2()
+        # 撞墙脱困的迟滞状态：绕行方向（±0.8）与还要保持几帧
+        self._wall_dir = 0.0
+        self._wall_frames = 0
+        # 距离控制的迟滞状态：True = 正在倒车拉开（退到 keep_min + AI_KEEP_HYST 外才撤销）
+        self._backing_off = False
+        # 撞墙绕行的「磨了多久」计数：见 _unstick_turn / _wall_forget
+        self._wall_busy = 0
+        # 绕行模式：打不出去就一直绕，直到「打得出去 + 前面不挡」（见 update）
+        self._wall_mode = False
         self.skill = "normal"
         self.params = AI_SKILLS["normal"]
         self.set_skill(skill)
@@ -1224,6 +1412,19 @@ class TankAI:
             self._wobble = self.rng.uniform(-p["aim_jitter"], p["aim_jitter"])
 
         dist = tank.pos.distance_to(target.pos)
+        # 视线分两个口径，别混用：
+        #  · los（车心 → 目标）：只用来决定「要不要往前压」。「看不见人就压上」
+        #    必须用车心，否则车头顶着掩体、炮口插进方块里时判定会随瞄准角
+        #    一帧一变，AI 就在「站着瞄」和「转身绕」之间无限翻烙饼（实测原地
+        #    磨了 9000 帧，一枪没打出去）。
+        #  · can_shoot（炮口 → 目标，且炮口不能贴着方块）：只用来决定开不开枪。
+        #    炮口比车体半径还远 3px，顶着墙时它已经插进方块里了；子弹还有
+        #    4px 半径，炮口离墙面 2px 时子弹一出生就判撞墙（实测白打 600 多发）。
+        muzzle = tank.muzzle_position()
+        los = has_line_of_sight(tank.pos, target.pos, tank.obstacles)
+        can_shoot = (has_line_of_sight(muzzle, target.pos, tank.obstacles)
+                     and obstacle_at(muzzle, tank.obstacles,
+                                     BULLET_RADIUS + 1) is None)
 
         # 目标速度估计：位置差分（每帧一次 update，故 dt = 1 帧），做一次轻平滑。
         # 只有真的在动才有提前量，静止目标必须直瞄——否则 hard 的 lead 会永远打偏。
@@ -1251,33 +1452,101 @@ class TankAI:
         # err > 0 => 目标在右手边 => turn > 0 = 顺时针 = 画面右转
         turn = max(-1.0, min(1.0, (err / AI_TURN_FULL_ERR) * p["turn_gain"]))
 
+        # 距离控制带迟滞（Schmitt）：只在越过阈值时切换「压上 / 拉开 / 保持」，
+        # 免得刚好卡在 keep_min 上一帧前进一帧倒车地抖（见 AI_KEEP_HYST 注释）。
+        if dist < p["keep_min"]:
+            self._backing_off = True
+        elif dist > p["keep_min"] + AI_KEEP_HYST:
+            self._backing_off = False
+
         if dist > p["keep_max"]:
             move = 1.0            # 太远：压上去
-        elif dist < p["keep_min"]:
-            move = -0.8           # 太近：倒车拉开
+        elif self._backing_off:
+            move = -0.8           # 太近：倒车拉开（退到迟滞带外才收手）
+        elif dist > (p["keep_min"] + p["keep_max"]) * 0.5 and abs(err) <= 12.0:
+            # 只在「舒适区上半段」才缓推：如果一进舒适区就往前挤，就会
+            # 「挤过头→倒车→又进舒适区→再挤」地来回磨，距离永远在 keep_min
+            # 上下摆一个像素级周期，AI 自己也被这点抖动带得瞄不准。
+            move = 0.35
         else:
-            move = 0.35 if abs(err) <= 12.0 else 0.0   # 距离合适：正对才缓推
+            move = 0.0
+        # 打不出去（隔墙 / 炮口被方块埋住）就先压上去，逼自己绕出射界。
+        # 判据用 can_shoot 而不是「车心看不看得见」：车心和目标之间只擦着方块
+        # 边角时，车心视线是通的、子弹却一定撞角——按车心算 AI 会站在那儿
+        # 「看着对方但一枪不开」到天荒地老。
+        if not can_shoot:
+            move = 1.0
         move *= p["speed"]
 
-        # 贴墙自保：按当前朝向前进会撞出场地就只原地转向，别拿车头顶墙
-        if move > 0 and self._would_leave_screen(tank, move):
+        # 撞墙自保：按当前朝向前进会顶到墙 / 出场地就停车 + 挑一侧绕行。
+        # 「打不出去」（can_shoot 为假）时进入绕行模式，并且**一直绕到「打得
+        # 出去 + 前面不挡」才退出**：中途只要切回瞄准，瞄准就会把车头转回墙里、
+        # 下一帧又被判挡，一帧绕一帧瞄地原地抖（实测在方块角上磨了上千帧）。
+        blocked = tank_blocked_ahead(tank, 1.0, tank.obstacles)
+        if not can_shoot:
+            self._wall_mode = True
+        elif self._wall_mode and not blocked:
+            self._wall_mode = False
+        if self._wall_mode:
+            turn = self._unstick_turn(tank)
+            # 前面空出来就一边转一边压上（绕着方块走），别停在原地等
+            move = 0.0 if blocked else p["speed"]
+        elif blocked and move > 0:
             move = 0.0
+            turn = self._unstick_turn(tank)
+        else:
+            self._wall_forget()
 
         self.turn_cmd = turn
         self.move_cmd = move
 
-        if (abs(err) <= p["fire_tol"] and dist <= AI_FIRE_RANGE
+        if (abs(err) <= p["fire_tol"] and dist <= AI_FIRE_RANGE and can_shoot
                 and tank.can_fire() and self.rng.random() < p["fire_chance"]):
             self.want_fire = True
 
-    @staticmethod
-    def _would_leave_screen(tank, move):
-        rad = math.radians(tank.angle)
-        step = tank.speed * max(0.0, move) + 2.0
-        nx = tank.pos.x + math.sin(rad) * step
-        ny = tank.pos.y - math.cos(rad) * step
-        return not (TANK_HALF <= nx <= SCREEN_WIDTH - TANK_HALF
-                    and TANK_HALF <= ny <= SCREEN_HEIGHT - TANK_HALF)
+    # --- 撞墙脱困（启发式，不做寻路）---
+    WALL_PROBE_DEG = 40.0   # 往左右各探这么多度，看哪边是空的
+    WALL_TURN_HOLD = 8      # 每段转向命令持续多少帧（8 × 3.2° ≈ 26°）
+    WALL_FLIP_FRAMES = 240  # 同一个方向绕了这么多帧还出不来（进了死角）才换一边
+
+    def _unstick_turn(self, tank):
+        """被挡住时挑一侧绕，并且**一直朝同一侧转**（撞墙脱困的唯一出处）。
+
+        两条要点，都是踩坑换来的：
+        1. 侧向只选一次。探路是相对「当前车头」量的，车头一转刚才空的那边
+           就可能变成堵的；每帧重探会左右横跳、原地磨（实测顶着掩体磨了
+           9000 帧，一枪没开出去）。
+        2. 同一个方向磨太久（WALL_FLIP_FRAMES）才换边——那是真进了死角
+           （U 形夹缝），换一边绕。只要还在往前挪就不换，这样才会沿着方块
+           走完一整圈把射界打开，而不是来回摆。
+        """
+        self._wall_busy += 1
+        if self._wall_frames > 0:
+            self._wall_frames -= 1
+            return self._wall_dir
+        if not self._wall_dir:
+            free_left = not tank_blocked_ahead(
+                tank, 1.0, tank.obstacles, angle=tank.angle - self.WALL_PROBE_DEG)
+            free_right = not tank_blocked_ahead(
+                tank, 1.0, tank.obstacles, angle=tank.angle + self.WALL_PROBE_DEG)
+            if free_left and not free_right:
+                self._wall_dir = TURN_LEFT * 0.8
+            elif free_right and not free_left:
+                self._wall_dir = TURN_RIGHT * 0.8
+            else:
+                self._wall_dir = TURN_RIGHT * 0.8   # 两边一样：先朝右绕
+        elif self._wall_busy > self.WALL_FLIP_FRAMES:
+            self._wall_dir = -self._wall_dir        # 死角：换一边
+            self._wall_busy = 0
+        self._wall_frames = self.WALL_TURN_HOLD
+        return self._wall_dir
+
+    def _wall_forget(self):
+        """这一帧没被挡住：慢慢忘掉绕行方向（连着一阵子不挡才重新探路）。"""
+        if self._wall_busy > 0:
+            self._wall_busy -= 1
+            if self._wall_busy == 0:
+                self._wall_dir = 0.0
 
 
 def describe_joysticks():
@@ -1460,6 +1729,11 @@ def main():
               f"（TANK_COACH=0 关闭）")
     else:
         print("[coach] 评估已关闭（TANK_COACH=0）")
+    if OBSTACLE_ENABLED:
+        print(f"[walls] {len(OBSTACLE_RECTS)} 个掩体方块：挡车、挡子弹、挡视线，"
+              f"隔墙 AI 不开枪（TANK_WALLS=0 可关掉）")
+    else:
+        print("[walls] 障碍物已关闭（TANK_WALLS=0）")
     # 字体：找不到带汉字的字体就把屏幕文案切英文（否则中文会画成方块）
     font = load_font(22)
     small_font = load_font(18)
@@ -1476,6 +1750,9 @@ def main():
     tanks = pygame.sprite.Group()
     bullets = pygame.sprite.Group()
     explosions = pygame.sprite.Group()
+    # 掩体只建一次：R / START 重开不重建，布局每局都一样（截图与自测依赖它）
+    obstacles = build_obstacles()
+    walls = tuple(ob.rect for ob in obstacles)   # 纯函数用的矩形；空组 = 无障碍物
 
     # --- 手柄设备管理（就地修改 pads 列表，闭包内外共享同一份）---
     pads = []
@@ -1569,6 +1846,9 @@ def main():
         # 重开时手柄绑定跟着新坦克走（重开后双人不用重插）
         t1.pad = pads[0] if len(pads) >= 1 else None
         t2.pad = pads[1] if (t2.ai is None and len(pads) >= 2) else None
+        # 障碍物挂在坦克上：drive() 每帧用它做碰撞（放在 tanks.add 之前，
+        # 保证第一帧就有碰撞）。默认空元组 → 不挂就是无障碍物。
+        t1.obstacles = t2.obstacles = walls
         tanks.add(t1, t2)
         # 评估器：每局一个（F2 切模式 / R 重开都跟着换），只在 1p 模式下存在
         nonlocal coach
@@ -1851,6 +2131,14 @@ def main():
             bullets.update()
             explosions.update()
 
+            # 子弹 × 障碍物：先撞墙，再看坦克（同一帧不允许穿墙命中）
+            if walls:
+                for bullet in bullets.sprites():
+                    if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
+                        explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
+                                                 GRAY, 14, 10))
+                        bullet.kill()
+
             # 子弹命中判定
             for bullet in bullets.sprites():
                 for tank in (tank1, tank2):
@@ -1905,6 +2193,7 @@ def main():
 
         # --- 绘制 ---
         draw_background(world)
+        obstacles.draw(world)      # 掩体画在背景之上、坦克之下
         tanks.draw(world)
         bullets.draw(world)
         explosions.draw(world)

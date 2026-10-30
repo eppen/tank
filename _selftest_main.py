@@ -39,11 +39,13 @@ def patched_hit(self, damage=g.DAMAGE):
 
 g.Tank.take_hit = patched_hit
 created = []
+created_tanks = []
 orig_init2 = g.Tank.__init__
 
 
 def counting_init(self, *a, **kw):
     created.append(a[2] if len(a) > 2 else None)
+    created_tanks.append(self)
     orig_init2(self, *a, **kw)
 
 
@@ -92,5 +94,13 @@ assert len(created) == 4, created
 assert any(d for _, _, d in hits), "应至少有一次击毁"
 assert max(hp for _, hp, _ in hits) < g.MAX_HP
 assert sum(1 for _, _, d in hits if d) >= 1
-print("OK：真的有掉血、有击毁、按 R 后重开了新的一局")
+# 掩体真的挂到坦克上了吗？main() 里的 reset() 在 tanks.add() 之前写
+# t1.obstacles = t2.obstacles = obstacles，这条「接线」只有跑过 main() 才验证得到：
+# 挂漏了的话车能穿墙、子弹也不停，而所有纯函数自测依然全绿。
+expect_walls = len(g.OBSTACLE_RECTS) if g.OBSTACLE_ENABLED else 0
+assert created_tanks, "没记录到任何坦克"
+assert all(len(t.obstacles) == expect_walls for t in created_tanks), \
+    f"有坦克没挂上掩体：{[len(t.obstacles) for t in created_tanks]}"
+print(f"OK：真的有掉血、有击毁、按 R 后重开了新的一局；"
+      f"{len(created_tanks)} 台坦克（含重开建的）都挂上了 {expect_walls} 块掩体")
 
