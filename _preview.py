@@ -47,18 +47,9 @@ h1 = font.render("P1 (red): W/S move, A/D turn, SPACE fire", True, (200, 120, 12
 h2 = font.render("P2 (blue): arrows, ENTER fire", True, (120, 150, 220))
 screen.blit(h1, (12, 10))
 screen.blit(h2, (g.SCREEN_WIDTH - h2.get_width() - 12, 10))
-# 与游戏内 HUD 同格式：HP + 炮口角度 + 到对手的瞄准残差
-import math
-
-
-def hud(tank, other, hp):
-    dx, dy = other.pos.x - tank.pos.x, other.pos.y - tank.pos.y
-    err = (math.degrees(math.atan2(dx, -dy)) - tank.angle + 180.0) % 360.0 - 180.0
-    return f"HP {hp:3d}  ANG {tank.angle % 360:3.0f}  ERR {err:+5.1f}"
-
-
-t1_text = small.render(hud(t1, t2, 100), True, (200, 120, 120))
-t2_text = small.render(hud(t2, t1, 60), True, (120, 150, 220))
+# 直接用游戏内同一份 HUD 文案（HP / ANG / ERR / DIST），不再复制一份格式串
+t1_text = small.render(g.hud_text(t1, t2, 100), True, (200, 120, 120))
+t2_text = small.render(g.hud_text(t2, t1, 60), True, (120, 150, 220))
 screen.blit(t1_text, (12, 34))
 screen.blit(t2_text, (g.SCREEN_WIDTH - t2_text.get_width() - 12, 34))
 g.draw_lives(screen, t1, 12, 54)

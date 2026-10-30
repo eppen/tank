@@ -15,6 +15,7 @@
 
 import math
 import os
+import re
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -211,5 +212,54 @@ assert abs(d.angle - e.angle) < 1e-9
 print(f"[6] dt 化 OK：同样 0.5 秒，30fps 转 {a.angle:.2f}°、60fps 转 "
       f"{b.angle:.2f}°（差 {abs(a.angle - b.angle) / b.angle * 100:.1f}%）；"
       f"忽略 dt 的旧写法只有 {c.angle:.2f}°")
+
+# ---------------------------------------- 7) HUD 文案：DIST = 到对手的欧氏距离
+# 点按微转让炮口能停在任意角度，前提是玩家看得出「差几度、离多远」——
+# HUD 的 ERR / DIST 就是这两个读数，格式和数值都得钉住。
+HUD_RE = re.compile(r"^HP\s+(\d+)\s{2}ANG\s+(\d+)\s{2}ERR\s+([+-][\d.]+)\s{2}"
+                    r"DIST\s+(\d+)$")
+
+
+def hud_fields(me_x, me_y, angle, other_x, other_y, hp=None):
+    """摆两台坦克，返回 (HUD 文案, (HP, ANG, ERR, DIST))——数值从文案里解析出来。"""
+    me = new_tank(me_x, me_y)
+    me.angle = angle
+    other = new_tank(other_x, other_y, g.BLUE)
+    text = g.hud_text(me, other) if hp is None else g.hud_text(me, other, hp)
+    m = HUD_RE.match(text)
+    assert m, f"HUD 格式变了：{text!r}"
+    expect_err = wrap(desired_to(me, *other.pos) - me.angle)
+    assert abs(float(m.group(3)) - expect_err) < 0.05, (text, expect_err)
+    assert int(m.group(4)) == round(me.pos.distance_to(other.pos)), text
+    return text, (int(m.group(1)), float(m.group(2)),
+                  float(m.group(3)), int(m.group(4)))
+
+
+# 水平 300px：正对（ERR 0）/ 目标在右（ERR +90）/ 目标在左（ERR -90）
+txt, (hp, ang, err, dist) = hud_fields(200, 300, 90.0, 500, 300)
+assert (hp, ang, err, dist) == (100, 90, 0.0, 300), txt
+assert "DIST 300" in txt and "ERR  +0.0" in txt, txt
+
+txt, (_, _, err, dist) = hud_fields(200, 300, 0.0, 500, 300)
+assert err > 89.9 and dist == 300, txt          # 目标在右手边 => 该右转
+txt, (_, _, err, dist) = hud_fields(500, 300, 0.0, 200, 300)
+assert err < -89.9 and dist == 300, txt         # 目标在左手边 => 该左转
+
+# 300/400 直角三角形：是欧氏距离（500），不是单轴差（300 或 400）
+txt, (_, _, _, dist) = hud_fields(200, 300, 0.0, 500, 700)
+assert dist == 500, txt
+assert dist not in (300, 400) and abs(math.hypot(300, 400) - 500) < 1e-9
+
+# 血量：不传 hp 用当前血量，传了就覆盖（截图脚本靠这个摆固定数字）
+me = new_tank()
+me.hp = 30
+assert "HP  30" in g.hud_text(me, new_tank(600, 500, g.BLUE))
+assert "HP  60" in g.hud_text(me, new_tank(600, 500, g.BLUE), 60)
+
+# 射程口径：超过 AI_FIRE_RANGE 的距离照样显示，只是那个距离上开火是废弹
+far_txt, (_, _, _, far_dist) = hud_fields(60, 60, 0.0, 740, 540)
+assert far_dist == round(math.hypot(680, 480)) and far_dist > g.AI_FIRE_RANGE, far_txt
+print(f"[7] HUD OK：`{far_txt}`（ERR 带正负号、DIST {far_dist}px 是欧氏距离，"
+      f"> 射程 {g.AI_FIRE_RANGE:.0f}px 仍在显示）")
 
 print("TURN SELFTEST OK：4° 格点 -> 1° 点按微转 + 帧率无关的转向")

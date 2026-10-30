@@ -1141,6 +1141,27 @@ def _wrap_deg(angle):
     return (angle + 180.0) % 360.0 - 180.0
 
 
+def hud_text(tank, other, hp=None):
+    """左上/右上那行 HUD 文案：血量 / 炮口角度 / 瞄准残差 / 到对手的距离。
+
+    全工程唯一出处——主循环和 `_preview.py` 截图都调它，避免两份格式串漂移。
+
+    - `ERR`：到对手的瞄准残差（度），正数 = 目标在右手边（该右转）；
+    - `DIST`：两车中心的**欧氏距离**（px），实时跟着走位变化；
+      超过 `AI_FIRE_RANGE`（560px）就是废弹距离——子弹会先飞出屏幕，
+      那个距离上开火只换来一次冷却（`tank_coach` 的 `far` 规则口径相同）。
+    - `hp=None` 时取坦克当前血量；截图脚本要摆固定血量时才传值。
+    """
+    dx = other.pos.x - tank.pos.x
+    dy = other.pos.y - tank.pos.y
+    err = _wrap_deg(math.degrees(math.atan2(dx, -dy)) - tank.angle)
+    dist = math.hypot(dx, dy)
+    if hp is None:
+        hp = tank.hp
+    return (f"HP {hp:3d}  ANG {tank.angle % 360:3.0f}  "
+            f"ERR {err:+5.1f}  DIST {dist:3.0f}")
+
+
 class TankAI:
     """电脑坦克：瞄准 / 保持距离 / 开火。
 
@@ -1948,17 +1969,16 @@ def main():
         screen.blit(pad_hint, pad_hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                        SCREEN_HEIGHT - 20)))
 
-        # 血量数值 + 炮口角度 / 瞄准残差 + 剩余命数（一排小方块，扣掉的变暗）
+        # 血量数值 + 炮口角度 / 瞄准残差 / 到对手距离 + 剩余命数（一排小方块，扣掉的变暗）
         # ANG/ERR 是给玩家的直接反馈：键盘一格原来是 4°，现在点按是 1°，
         # 有了 ERR 才知道自己到底差几度，而不是「按了没反应 / 怎么都对不上」。
+        # DIST = 到对手的实时距离（px），超过 AI_FIRE_RANGE 打的都是废弹
+        # （子弹先出屏），不用再靠目测估距离开枪。
+        # 文案唯一出处是 hud_text()，_preview.py 截图用的是同一份。
         for tank, is_left in ((tank1, True), (tank2, False)):
             other = tank2 if tank is tank1 else tank1
-            dx, dy = other.pos.x - tank.pos.x, other.pos.y - tank.pos.y
-            err = _wrap_deg(math.degrees(math.atan2(dx, -dy)) - tank.angle)
             color = (200, 120, 120) if is_left else (120, 150, 220)
-            text = small_font.render(
-                f"HP {tank.hp:3d}  ANG {tank.angle % 360:3.0f}  ERR {err:+5.1f}",
-                True, color)
+            text = small_font.render(hud_text(tank, other), True, color)
             screen.blit(text, (12, 34) if is_left
                         else (SCREEN_WIDTH - text.get_width() - 12, 34))
         draw_lives(screen, tank1, 12, 54)
