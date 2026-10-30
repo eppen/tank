@@ -114,6 +114,8 @@ def play(policy, seed, max_frames=9000):
             held = (frame % 4 == 0)                  # 每 4 帧敲一次（快于冷却）
             want_fire = (e <= 5.0 and d <= 560.0 and cpu.invuln == 0)
         h.drive(turn, move)
+        # 帧末分离（与 main() 同一顺序：两车都动完、命中判定之前）
+        g.separate_tanks(h, cpu)
 
         fire_edge = held and not prev_fire
         prev_fire = held

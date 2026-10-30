@@ -231,6 +231,8 @@ for _ in range(1500):
         assert g.obstacle_at(me.pos, WALLS, g.TANK_HALF - 1) is None, \
             f"AI 开进方块了：{me.pos}"
         me.sync_image()
+    # 帧末分离：两台车本帧都动完了，按「各让一半」分开（顺序与 main() 一致）
+    g.separate_tanks(r_tank, b_tank)
     for b in bullets.sprites():
         b.update()
         assert g.obstacle_at(b.pos, WALLS, g.BULLET_RADIUS) is None or b.alive()

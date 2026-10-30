@@ -659,8 +659,9 @@ def safe_respawn_point(opponent, fallback=None):
 
 
 # --- 障碍物几何：全工程唯一的判断出处 ---
-# 车体碰撞（Tank.drive）、子弹撞墙（main）、AI 探路（TankAI.update）都只走
-# 下面这几个函数，不再各自写一份 colliderect / 线段求交。
+# 车体碰撞（Tank.drive）、子弹撞墙（main）、AI 探路（TankAI.update）、
+# 两车互斥（separate_tanks）、屏幕边界（clamp_to_field）都只走下面这几个
+# 函数，不再各自写一份 colliderect / 线段求交 / max-min 夹取。
 # obstacles 可以是 pygame.Rect 的序列，也可以是 Obstacle 精灵组（取 .rect）。
 
 def _closest_point(pos, rect):
@@ -728,6 +729,86 @@ def resolve_obstacles(pos, radius, obstacles, passes=3):
     return moved
 
 
+def clamp_to_field(pos, radius=TANK_HALF):
+    """把圆心 pos 夹进场地内（就地修改 Vector2），返回是否真的挪过。
+
+    屏幕边界夹取的唯一出处：`Tank.drive()` 和 `separate_tanks()` 都调它，
+    不再各自写一份 `max(TANK_HALF, min(SCREEN_WIDTH - TANK_HALF, x))`。
+    左右/上下都留出一个 radius（车体半径），所以车贴边时车体不会被切掉。
+    """
+    x = max(radius, min(SCREEN_WIDTH - radius, pos.x))
+    y = max(radius, min(SCREEN_HEIGHT - radius, pos.y))
+    if x == pos.x and y == pos.y:
+        return False
+    pos.update(x, y)
+    return True
+
+
+# 车 × 车分离的容差（px）：分到「最小中心距 - 1」就收手，防止贴着时每帧
+# 亚像素微震。1px 这个口径与 tank_blocked_ahead 里 TANK_HALF - 1 完全一致。
+TANK_GAP = 1.0
+
+
+def _nudge(tank, direction, amount, radius):
+    """沿 direction 把 tank 推 amount，压回掩体/场地内，返回实际分离量。
+
+    返回值是「沿 direction 的投影增量」，也就是这次真正让出来的距离：被墙或
+    边界吃掉的部分自然变小，调用方（separate_tanks）据此把差额补给对手。
+    """
+    if amount <= 0.0:
+        return 0.0
+    before = tank.pos.x * direction.x + tank.pos.y * direction.y
+    tank.pos += direction * amount
+    resolve_obstacles(tank.pos, radius, tank.obstacles)
+    clamp_to_field(tank.pos, radius)
+    after = tank.pos.x * direction.x + tank.pos.y * direction.y
+    return max(0.0, after - before)
+
+
+def separate_tanks(a, b, radius=TANK_HALF, passes=3):
+    """把重叠的两台车沿中心连线对称推开（双方各让一半），返回本帧是否重叠过。
+
+    「允许双方交互位置」的唯一出处，语义按「双方都被影响」定：
+      - 穿透量各推一半，不是「谁后动谁推人」——1p / 2p、人类 / AI 一样公平；
+      - 每次推完各自跑 resolve_obstacles() + clamp_to_field() 压回掩体和场地；
+        被墙 / 边界吃掉的那部分补给另一台（掩体与边界 = 无限质量），所以
+        「贴墙 + 被顶」时不会两台一起陷进方块；
+      - 中心距 >= 2*radius - TANK_GAP 时直接返回 False，坐标一位不动：幂等，
+        已经分开的帧不会被改出抖动；
+      - 完全重合（中心距 ≈ 0）时沿固定轴 (1, 0) 分开，避免除零 / NaN；
+      - passes>1 处理「被掩体和对手三角夹住」，剩下的亚像素重叠下一帧继续分。
+
+    调用点：main() 在两台车都 drive() 完之后、子弹命中判定之前调一次。
+    不要塞进 Tank.drive()：drive() 是单车逻辑，主循环里两台车先后各调一次，
+    写进去就变成「后动的那台单方面推前一台」，既不对称也会污染既有自测。
+    """
+    if a is b or a is None or b is None:
+        return False
+    if not (a.alive and b.alive):
+        return False
+    min_dist = 2.0 * radius
+    overlapped = False
+    for _ in range(max(1, int(passes))):
+        delta = b.pos - a.pos
+        dist = delta.length()
+        if dist >= min_dist - TANK_GAP:
+            break
+        overlapped = True
+        if dist > 1e-6:
+            unit = delta / dist                 # a -> b 的单位向量
+        else:
+            unit = pygame.Vector2(1.0, 0.0)     # 完全重合：固定轴，避免除零
+        half = (min_dist - dist) * 0.5
+        moved_a = _nudge(a, -unit, half, radius)
+        moved_b = _nudge(b, unit, half, radius)
+        # 被墙 / 边界吃掉的部分补给另一台（墙 = 无限质量）
+        if moved_a < half - 1e-9:
+            _nudge(b, unit, half - moved_a, radius)
+        elif moved_b < half - 1e-9:
+            _nudge(a, -unit, half - moved_b, radius)
+    return overlapped
+
+
 def has_line_of_sight(a, b, obstacles):
     """a 到 b 的线段有没有被障碍物挡住（全工程唯一的视线出处）。
 
@@ -743,8 +824,8 @@ def has_line_of_sight(a, b, obstacles):
     return True
 
 
-def tank_blocked_ahead(tank, move, obstacles, reach=2.0, angle=None):
-    """按给定朝向（默认车头）前进会不会马上顶到墙 / 出场地。
+def tank_blocked_ahead(tank, move, obstacles, reach=2.0, angle=None, other=None):
+    """按给定朝向（默认车头）前进会不会马上顶到墙 / 出场地 / 顶到对手。
 
     口径沿用旧版 TankAI._would_leave_screen（沿朝向探 speed*move + 2px，
     看车体半径的位置是否越界），只是多查一次障碍物；AI 探路与「贴墙停车」
@@ -754,6 +835,11 @@ def tank_blocked_ahead(tank, move, obstacles, reach=2.0, angle=None):
     「距墙面 TANK_HALF」上（resolve_obstacles 就是推到相切），拿 TANK_HALF
     去比，贴着墙的所有方向（包括平行、背离）都会被判成「挡」——车于是既
     不敢前进也不敢转，只能原地抖。少 1px 就等于「只有真的会往里挤才算挡」。
+
+    other：对手坦克（可选）。给了就把「探针进到两车相切 - 1px 以内」也算挡，
+    口径同上（少 1px 容差，贴住时不会既不敢走也不敢转）。不认对手的话，
+    两车互斥之后 AI 会一直往前挤、被玩家顶着磨到墙角站桩挨打。默认 None，
+    所有既有调用行为逐位不变。
     """
     rad = math.radians(tank.angle if angle is None else angle)
     step = tank.speed * max(0.0, move) + reach
@@ -762,7 +848,10 @@ def tank_blocked_ahead(tank, move, obstacles, reach=2.0, angle=None):
     if not (TANK_HALF <= probe.x <= SCREEN_WIDTH - TANK_HALF
             and TANK_HALF <= probe.y <= SCREEN_HEIGHT - TANK_HALF):
         return True
-    return obstacle_at(probe, obstacles, TANK_HALF - 1.0) is not None
+    if obstacle_at(probe, obstacles, TANK_HALF - 1.0) is not None:
+        return True
+    return (other is not None and other is not tank
+            and probe.distance_to(other.pos) <= 2 * TANK_HALF - 1.0)
 
 
 class Tank(pygame.sprite.Sprite):
@@ -867,9 +956,8 @@ class Tank(pygame.sprite.Sprite):
         # 障碍物碰撞：沿最小穿透方向把车体推出方块（撞墙 = 沿墙滑行）
         resolve_obstacles(self.pos, TANK_HALF, self.obstacles)
 
-        # 限制在屏幕内
-        self.pos.x = max(TANK_HALF, min(SCREEN_WIDTH - TANK_HALF, self.pos.x))
-        self.pos.y = max(TANK_HALF, min(SCREEN_HEIGHT - TANK_HALF, self.pos.y))
+        # 限制在屏幕内（唯一出处：clamp_to_field，separate_tanks 也用它）
+        clamp_to_field(self.pos, TANK_HALF)
 
     def read_keyboard_axes(self, keys, dt=1.0 / FPS):
         """把键盘按键折算成 (turn, move)：move ∈ {-1,0,1}，turn ∈ [-1,1]。
@@ -1412,6 +1500,10 @@ class TankAI:
             self._wobble = self.rng.uniform(-p["aim_jitter"], p["aim_jitter"])
 
         dist = tank.pos.distance_to(target.pos)
+        # 已经被顶到贴身（各档 keep_min 最小也有 120px，能到 46px 只可能是被
+        # 玩家主动顶上来）：这一帧倒车让开，而不是继续压上去磨。瞄准和开火
+        # 照常，所以「让开」不会变成「站着挨打」。
+        pressed = dist <= 2 * TANK_HALF + 2
         # 视线分两个口径，别混用：
         #  · los（车心 → 目标）：只用来决定「要不要往前压」。「看不见人就压上」
         #    必须用车心，否则车头顶着掩体、炮口插进方块里时判定会随瞄准角
@@ -1459,7 +1551,9 @@ class TankAI:
         elif dist > p["keep_min"] + AI_KEEP_HYST:
             self._backing_off = False
 
-        if dist > p["keep_max"]:
+        if pressed:
+            move = -0.8           # 被顶住：先让开（下面还有最终兜底，见末尾）
+        elif dist > p["keep_max"]:
             move = 1.0            # 太远：压上去
         elif self._backing_off:
             move = -0.8           # 太近：倒车拉开（退到迟滞带外才收手）
@@ -1474,7 +1568,7 @@ class TankAI:
         # 判据用 can_shoot 而不是「车心看不看得见」：车心和目标之间只擦着方块
         # 边角时，车心视线是通的、子弹却一定撞角——按车心算 AI 会站在那儿
         # 「看着对方但一枪不开」到天荒地老。
-        if not can_shoot:
+        if not can_shoot and not pressed:
             move = 1.0
         move *= p["speed"]
 
@@ -1482,20 +1576,26 @@ class TankAI:
         # 「打不出去」（can_shoot 为假）时进入绕行模式，并且**一直绕到「打得
         # 出去 + 前面不挡」才退出**：中途只要切回瞄准，瞄准就会把车头转回墙里、
         # 下一帧又被判挡，一帧绕一帧瞄地原地抖（实测在方块角上磨了上千帧）。
-        blocked = tank_blocked_ahead(tank, 1.0, tank.obstacles)
+        blocked = tank_blocked_ahead(tank, 1.0, tank.obstacles, other=target)
         if not can_shoot:
             self._wall_mode = True
         elif self._wall_mode and not blocked:
             self._wall_mode = False
         if self._wall_mode:
-            turn = self._unstick_turn(tank)
+            turn = self._unstick_turn(tank, target)
             # 前面空出来就一边转一边压上（绕着方块走），别停在原地等
             move = 0.0 if blocked else p["speed"]
         elif blocked and move > 0:
             move = 0.0
-            turn = self._unstick_turn(tank)
+            turn = self._unstick_turn(tank, target)
         else:
             self._wall_forget()
+
+        # move 决策链的最终兜底：被顶住就倒车让开，连「绕墙模式里压上」
+        # 也不许覆盖这条；turn 仍然生效，所以被顶在墙角时会「边转身边倒车」
+        # 沿墙滑出来，而不是原地顶牛。
+        if pressed:
+            move = -0.8 * p["speed"]
 
         self.turn_cmd = turn
         self.move_cmd = move
@@ -1509,7 +1609,7 @@ class TankAI:
     WALL_TURN_HOLD = 8      # 每段转向命令持续多少帧（8 × 3.2° ≈ 26°）
     WALL_FLIP_FRAMES = 240  # 同一个方向绕了这么多帧还出不来（进了死角）才换一边
 
-    def _unstick_turn(self, tank):
+    def _unstick_turn(self, tank, target=None):
         """被挡住时挑一侧绕，并且**一直朝同一侧转**（撞墙脱困的唯一出处）。
 
         两条要点，都是踩坑换来的：
@@ -1519,6 +1619,9 @@ class TankAI:
         2. 同一个方向磨太久（WALL_FLIP_FRAMES）才换边——那是真进了死角
            （U 形夹缝），换一边绕。只要还在往前挪就不换，这样才会沿着方块
            走完一整圈把射界打开，而不是来回摆。
+        3. 侧向探测也带上对手车体（other=target）：两车互斥之后，把 AI 顶在
+           角落的往往是玩家而不是墙；不认对手的话它会朝「只剩玩家的方向」
+           继续转，绕进对方的车体里。
         """
         self._wall_busy += 1
         if self._wall_frames > 0:
@@ -1526,9 +1629,11 @@ class TankAI:
             return self._wall_dir
         if not self._wall_dir:
             free_left = not tank_blocked_ahead(
-                tank, 1.0, tank.obstacles, angle=tank.angle - self.WALL_PROBE_DEG)
+                tank, 1.0, tank.obstacles, angle=tank.angle - self.WALL_PROBE_DEG,
+                other=target)
             free_right = not tank_blocked_ahead(
-                tank, 1.0, tank.obstacles, angle=tank.angle + self.WALL_PROBE_DEG)
+                tank, 1.0, tank.obstacles, angle=tank.angle + self.WALL_PROBE_DEG,
+                other=target)
             if free_left and not free_right:
                 self._wall_dir = TURN_LEFT * 0.8
             elif free_right and not free_left:
@@ -2127,6 +2232,13 @@ def main():
                         if hint:
                             toast["text"], toast["frames"] = hint[1], 150
                             print(f"[coach] 即时提示：{hint[1]}")
+
+            # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
+            # 位置很关键——早于两车更新会被下一次 drive 盖掉，晚于命中判定则
+            # 子弹已经按旧位置判过命中。一局结束后（winner 已定）不再推挤，
+            # 免得把「尸体」顶走。
+            if winner is None:
+                separate_tanks(tank1, tank2)
 
             bullets.update()
             explosions.update()
