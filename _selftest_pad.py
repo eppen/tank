@@ -12,6 +12,7 @@
 运行：SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_pad.py
 """
 
+import builtins
 import math
 import os
 import subprocess
@@ -142,6 +143,74 @@ def pad_main_scenario():
 
 if "--pad-main" in sys.argv:
     pad_main_scenario()
+    sys.exit(0)
+
+
+def await_start_scenario():
+    """切 1P/2P 后必须等 Start/开火才开打；等待期间不应产生子弹。"""
+    g.MAX_LIVES = 1
+    seen = {"fire": [], "mode_logs": []}
+
+    orig_print = builtins.print
+
+    def capturing_print(*args, **kwargs):
+        line = " ".join(str(a) for a in args)
+        if "[mode]" in line:
+            seen["mode_logs"].append(line)
+        return orig_print(*args, **kwargs)
+
+    orig_fire = g.Tank.fire
+
+    def counting_fire(self):
+        seen["fire"].append(frame["i"])
+        return orig_fire(self)
+
+    g.Tank.fire = counting_fire
+    builtins.print = capturing_print
+
+    fc1, fc2 = FakeController(), FakeController()
+    fc2.name = "Fake P2"
+    g.sdl2_controller = FakeSDL2([fc1, fc2])
+
+    frame = {"i": 0}
+
+    def fake_get():
+        i = frame["i"]
+        frame["i"] += 1
+        fc1.buttons.clear()
+        # 帧 5：F2 切到 1p → awaiting_start
+        if i == 5:
+            return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F2)]
+        # 帧 40：Start 确认开打（等待段不按开火，避免 fire 边沿提前开打）
+        if i in (40, 41):
+            fc1.buttons[pygame.CONTROLLER_BUTTON_START] = True
+        # 帧 55–90：脉冲 A，开打后应能开火
+        elif 55 <= i < 90 and (i % 6) < 2:
+            fc1.buttons[pygame.CONTROLLER_BUTTON_A] = True
+        if i >= 110:
+            return [pygame.event.Event(pygame.QUIT)]
+        return []
+
+    pygame.event.get = fake_get
+    try:
+        try:
+            g.main()
+        except SystemExit:
+            pass
+    finally:
+        builtins.print = orig_print
+        g.Tank.fire = orig_fire
+
+    assert any("等待 Start" in m for m in seen["mode_logs"]), seen["mode_logs"]
+    assert any("开打" in m for m in seen["mode_logs"]), seen["mode_logs"]
+    assert seen["fire"], "开打后应有至少一次开火"
+    assert min(seen["fire"]) >= 40, f"等待段不应开火：{seen['fire']}"
+    print("AWAIT_START OK：切模式等待 → Start 开打 → 可开火，fired =",
+          len(seen["fire"]), "first_at_frame =", min(seen["fire"]))
+
+
+if "--await-start" in sys.argv:
+    await_start_scenario()
     sys.exit(0)
 
 
@@ -468,4 +537,13 @@ print(out)
 assert proc.returncode == 0, f"pad-main 子进程失败\n{out}"
 assert "PAD_MAIN OK" in proc.stdout
 
-print("PAD 测试全部通过：无手柄降级/死区/归一化/Y 轴/上升沿/双柄分控/键盘等价/端到端")
+# --------------------------------------------- 11) 切模式后等待 Start 再开打
+proc2 = subprocess.run([sys.executable, os.path.abspath(__file__), "--await-start"],
+                       capture_output=True, text=True, env=env)
+out2 = "\n".join(l for l in (proc2.stdout + proc2.stderr).splitlines()
+                 if not l.startswith(("pygame ", "Hello from", "  from pkg")))
+print(out2)
+assert proc2.returncode == 0, f"await-start 子进程失败\n{out2}"
+assert "AWAIT_START OK" in proc2.stdout
+
+print("PAD 测试全部通过：无手柄降级/死区/归一化/Y 轴/上升沿/双柄分控/键盘等价/端到端/等待开始")

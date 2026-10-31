@@ -2081,6 +2081,8 @@ def main():
     bind_pads()
     winner = None
     shake = 0.0
+    # 仅切 1P/2P 后为 True：场地已摆好，等 Start(+)/R/开火才开打；首次启动直接开打
+    awaiting_start = False
 
     def try_fire(tank):
         """键盘与手柄共用的开火逻辑（冷却由 Tank.fire 内部控制）。"""
@@ -2191,27 +2193,30 @@ def main():
         toast["text"], toast["frames"] = text, frames
 
     def toggle_mode():
-        """F2 / BACK：双人 ↔ 单人 vs 电脑（切换即重开一局）。"""
-        nonlocal mode, tank1, tank2, winner, shake
+        """F2 / LB+RB：双人 ↔ 单人 vs 电脑；摆好场地后进入等待开始。"""
+        nonlocal mode, tank1, tank2, winner, shake, awaiting_start
         mode = "2p" if mode == "1p" else "1p"
         tank1, tank2 = reset()
         bind_pads()
         winner = None
         shake = 0.0
+        awaiting_start = True
         if mode == "1p":
             label = AI_SKILLS[ai_skill]["label"]
-            msg = (f"Mode: 1P vs CPU ({label})"
+            msg = (f"Mode: 1P vs CPU ({label}) — press Start(+)/R/fire"
                    if tank_coach.ASCII_ONLY else
-                   f"模式：单人 vs 电脑（{label}）")
-            print("[mode] 已切换为单人 vs 电脑")
+                   f"模式：单人 vs 电脑（{label}）— 按 Start(+)/R/开火 开始")
+            print("[mode] 已切换为单人 vs 电脑（等待 Start 开始）")
         else:
-            msg = ("Mode: 2P duel" if tank_coach.ASCII_ONLY else "模式：双人对战")
-            print("[mode] 已切换为双人对战")
-        set_toast(msg)
+            msg = ("Mode: 2P duel — press Start(+)/R/fire"
+                   if tank_coach.ASCII_ONLY else
+                   "模式：双人对战 — 按 Start(+)/R/开火 开始")
+            print("[mode] 已切换为双人对战（等待 Start 开始）")
+        set_toast(msg, frames=180)
         return True
 
     def cycle_difficulty():
-        """F3 / 右摇杆按下：EASY → NORMAL → HARD 循环。"""
+        """F3 / LB+X：EASY → NORMAL → HARD 循环（等待开始时也可改）。"""
         nonlocal ai_skill
         ai_skill = AI_SKILL_ORDER[
             (AI_SKILL_ORDER.index(ai_skill) + 1) % len(AI_SKILL_ORDER)]
@@ -2224,12 +2229,27 @@ def main():
         set_toast(f"AI: {label}" if tank_coach.ASCII_ONLY else f"难度：{label}")
         return True
 
+    def confirm_start():
+        """等待态下按 Start(+)/R/开火：真正开打。"""
+        nonlocal awaiting_start
+        if not awaiting_start:
+            return False
+        awaiting_start = False
+        if coach is not None:
+            # 从确认开打起算本局评估，不含等待帧
+            coach.begin_round(AI_SKILLS[ai_skill]["label"])
+        print("[mode] 开打")
+        set_toast("Fight!" if tank_coach.ASCII_ONLY else "开始！")
+        return True
+
     def rematch():
-        """R / START：胜负后重开一局。"""
-        nonlocal tank1, tank2, winner, shake
+        """R / START：胜负后重开一局（直接开打，不进等待）。"""
+        nonlocal tank1, tank2, winner, shake, awaiting_start
         tank1, tank2 = reset()
+        bind_pads()
         winner = None
         shake = 0.0
+        awaiting_start = False
         set_toast("Rematch" if tank_coach.ASCII_ONLY else "再来一局")
         return True
 
@@ -2322,6 +2342,16 @@ def main():
                     else:
                         print(f"[coach] 实时面板 {'开' if coach_panel else '关'}"
                               f"（本局累计到第 {coach.metrics()['frames']} 帧）")
+                elif awaiting_start:
+                    if event.key == pygame.K_r:
+                        confirm_start()
+                    else:
+                        for tank in (tank1, tank2):
+                            if tank.ai is not None or not tank.controls:
+                                continue
+                            if event.key == tank.controls["fire"]:
+                                confirm_start()
+                                break
                 elif winner is not None:
                     if event.key == pygame.K_r:
                         rematch()
@@ -2341,12 +2371,16 @@ def main():
         menu_ate_fire = False
         if not paused:
             # 手柄菜单：专用键 / 事件闩锁 / LB+RB·LB+X 和弦；
-            # 胜负后 START 或任意开火键都可重开（开火键在 MFI 上最可靠）
+            # 等待开始 / 胜负后：START 或任意开火键确认
             if any(pad.mode_edge() for pad in pads):
                 toggle_mode()
                 menu_ate_fire = True
             elif any(pad.difficulty_edge() for pad in pads):
                 cycle_difficulty()
+                menu_ate_fire = True
+            elif awaiting_start and any(
+                    pad.restart_edge() or pad.fire_edge() for pad in pads):
+                confirm_start()
                 menu_ate_fire = True
             elif winner is not None and any(
                     pad.restart_edge() or pad.fire_edge() for pad in pads):
@@ -2355,114 +2389,119 @@ def main():
             if not menu_ate_fire:
                 menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
 
-            for tank in (tank1, tank2):
-                tank.tick()
-                if winner is not None:
-                    continue
-                if not tank.alive:
-                    # 被击毁但还有命：复活倒计时走完就回出生点（同一台坦克对象）
-                    if tank.respawn_timer > 0:
-                        tank.respawn_timer -= 1
-                        if tank.respawn_timer == 0:
-                            tank.respawn()
-                            tanks.add(tank)
-                            explosions.add(Explosion(tank.pos.x, tank.pos.y,
-                                                     tank.color, 40, 16))
-                            print(f"[life] {tank_label(tank)} 复活，"
-                                  f"剩 {tank.lives} 条命（{SPAWN_INVULN} 帧无敌）")
-                    continue
-                if tank.ai is not None:
-                    # 电脑坦克：决策 -> 走同一条 drive() 通道（转向符号不变）
-                    tank.ai.update(tank, tank1 if tank is tank2 else tank2)
-                    tank.drive(tank.ai.turn(), tank.ai.move(), dt)
-                    if tank.ai.want_fire:
-                        try_fire(tank)
-                else:
-                    # 键盘 + 手柄合成，无手柄时 = handle_input
-                    tank.poll_controls(keys, dt)
-                    if (tank.pad is not None and tank.pad.fire_edge()
-                            and not menu_ate_fire):
-                        try_fire(tank)
-                    if coach is not None and tank is tank1:
-                        # 开火键是否还按着：判断「按住不放」这种最常见的误用
-                        try:
-                            held = bool(keys[tank.controls["fire"]])
-                        except (KeyError, IndexError):
-                            held = False
-                        held = held or (tank.pad is not None and tank.pad.fire_held())
-                        coach.observe(tank, tank2, held)
-                        hint = coach.new_hint()
-                        if hint:
-                            toast["text"] = "COACH: " + hint[1]
-                            toast["frames"] = 150
-                            print(f"[coach] 即时提示：{hint[1]}")
-
-            # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
-            # 位置很关键——早于两车更新会被下一次 drive 盖掉，晚于命中判定则
-            # 子弹已经按旧位置判过命中。一局结束后（winner 已定）不再推挤，
-            # 免得把「尸体」顶走。
-            if winner is None:
-                separate_tanks(tank1, tank2)
-
-            bullets.update()
-            explosions.update()
-
-            # 子弹 × 障碍物：先撞墙，再看坦克（同一帧不允许穿墙命中）
-            if walls:
-                for bullet in bullets.sprites():
-                    if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
-                        explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
-                                                 GRAY, 14, 10))
-                        bullet.kill()
-
-            # 子弹命中判定
-            for bullet in bullets.sprites():
+            if awaiting_start:
+                if toast["frames"] > 0:
+                    toast["frames"] -= 1
+            else:
                 for tank in (tank1, tank2):
-                    if tank is bullet.owner or not tank.alive:
+                    tank.tick()
+                    if winner is not None:
                         continue
-                    if bullet.touches(tank):
-                        hit_point = pygame.Vector2(bullet.pos)
-                        bullet.kill()
-                        explosions.add(Explosion(hit_point.x, hit_point.y, YELLOW, 26, 14))
-                        shake = max(shake, 5.0)
-                        shielded = tank.invuln > 0        # 复活无敌：这一发不掉血
-                        if coach is not None:
-                            coach.on_hit(by_human=(bullet.owner is tank1),
-                                         shield=shielded, bullet=bullet)
-                        if tank.take_hit(DAMAGE):
-                            if tank.pad is not None:
-                                tank.pad.rumble(PAD_RUMBLE_MS, 0.8)   # 击毁时震一下
-                            explosions.add(Explosion(tank.pos.x, tank.pos.y,
-                                                     tank.color, 72, 28))
-                            shake = max(shake, 15.0)
-                            tank.kill()  # 移出精灵组，不再绘制
-                            # 生命值：扣一条命，还有命就等复活，扣完才分胜负
-                            if coach is not None:
-                                # 放在 lose_life() 之前：最后一条命也算进统计
-                                coach.on_death(victim_is_human=(tank is tank1))
-                            if tank.lose_life():
-                                # 复活点改成离对手最远的角，并朝向对手
-                                point, angle = safe_respawn_point(
-                                    tank1 if tank is tank2 else tank2,
-                                    tank.respawn_point)
-                                tank.respawn_point = point
-                                tank.respawn_angle = angle
-                                print(f"[life] {tank_label(tank)} 被击毁，"
-                                      f"剩 {tank.lives} 条命，"
-                                      f"{RESPAWN_DELAY / FPS:.1f} 秒后复活")
-                            elif mode == "1p":
-                                winner = "YOU WIN!" if tank is tank2 else "CPU WINS!"
-                                print(f"[life] {tank_label(tank)} 命已用尽，本局结束")
-                                finish_round(won=(tank is tank2))
-                            else:
-                                winner = ("P1 (red) wins!" if tank is tank2
-                                          else "P2 (blue) wins!")
-                                print(f"[life] {tank_label(tank)} 命已用尽，本局结束")
-                        break
+                    if not tank.alive:
+                        # 被击毁但还有命：复活倒计时走完就回出生点（同一台坦克对象）
+                        if tank.respawn_timer > 0:
+                            tank.respawn_timer -= 1
+                            if tank.respawn_timer == 0:
+                                tank.respawn()
+                                tanks.add(tank)
+                                explosions.add(Explosion(tank.pos.x, tank.pos.y,
+                                                         tank.color, 40, 16))
+                                print(f"[life] {tank_label(tank)} 复活，"
+                                      f"剩 {tank.lives} 条命（{SPAWN_INVULN} 帧无敌）")
+                        continue
+                    if tank.ai is not None:
+                        # 电脑坦克：决策 -> 走同一条 drive() 通道（转向符号不变）
+                        tank.ai.update(tank, tank1 if tank is tank2 else tank2)
+                        tank.drive(tank.ai.turn(), tank.ai.move(), dt)
+                        if tank.ai.want_fire:
+                            try_fire(tank)
+                    else:
+                        # 键盘 + 手柄合成，无手柄时 = handle_input
+                        tank.poll_controls(keys, dt)
+                        if (tank.pad is not None and tank.pad.fire_edge()
+                                and not menu_ate_fire):
+                            try_fire(tank)
+                        if coach is not None and tank is tank1:
+                            # 开火键是否还按着：判断「按住不放」这种最常见的误用
+                            try:
+                                held = bool(keys[tank.controls["fire"]])
+                            except (KeyError, IndexError):
+                                held = False
+                            held = held or (tank.pad is not None and tank.pad.fire_held())
+                            coach.observe(tank, tank2, held)
+                            hint = coach.new_hint()
+                            if hint:
+                                toast["text"] = "COACH: " + hint[1]
+                                toast["frames"] = 150
+                                print(f"[coach] 即时提示：{hint[1]}")
 
-            shake = max(0.0, shake - 0.9)
-            if toast["frames"] > 0:
-                toast["frames"] -= 1
+                # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
+                # 位置很关键——早于两车更新会被下一次 drive 盖掉，晚于命中判定则
+                # 子弹已经按旧位置判过命中。一局结束后（winner 已定）不再推挤，
+                # 免得把「尸体」顶走。
+                if winner is None:
+                    separate_tanks(tank1, tank2)
+
+                bullets.update()
+                explosions.update()
+
+                # 子弹 × 障碍物：先撞墙，再看坦克（同一帧不允许穿墙命中）
+                if walls:
+                    for bullet in bullets.sprites():
+                        if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
+                            explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
+                                                     GRAY, 14, 10))
+                            bullet.kill()
+
+                # 子弹命中判定
+                for bullet in bullets.sprites():
+                    for tank in (tank1, tank2):
+                        if tank is bullet.owner or not tank.alive:
+                            continue
+                        if bullet.touches(tank):
+                            hit_point = pygame.Vector2(bullet.pos)
+                            bullet.kill()
+                            explosions.add(Explosion(hit_point.x, hit_point.y,
+                                                     YELLOW, 26, 14))
+                            shake = max(shake, 5.0)
+                            shielded = tank.invuln > 0    # 复活无敌：这一发不掉血
+                            if coach is not None:
+                                coach.on_hit(by_human=(bullet.owner is tank1),
+                                             shield=shielded, bullet=bullet)
+                            if tank.take_hit(DAMAGE):
+                                if tank.pad is not None:
+                                    tank.pad.rumble(PAD_RUMBLE_MS, 0.8)
+                                explosions.add(Explosion(tank.pos.x, tank.pos.y,
+                                                         tank.color, 72, 28))
+                                shake = max(shake, 15.0)
+                                tank.kill()  # 移出精灵组，不再绘制
+                                if coach is not None:
+                                    coach.on_death(victim_is_human=(tank is tank1))
+                                if tank.lose_life():
+                                    point, angle = safe_respawn_point(
+                                        tank1 if tank is tank2 else tank2,
+                                        tank.respawn_point)
+                                    tank.respawn_point = point
+                                    tank.respawn_angle = angle
+                                    print(f"[life] {tank_label(tank)} 被击毁，"
+                                          f"剩 {tank.lives} 条命，"
+                                          f"{RESPAWN_DELAY / FPS:.1f} 秒后复活")
+                                elif mode == "1p":
+                                    winner = ("YOU WIN!" if tank is tank2
+                                              else "CPU WINS!")
+                                    print(f"[life] {tank_label(tank)} 命已用尽，"
+                                          f"本局结束")
+                                    finish_round(won=(tank is tank2))
+                                else:
+                                    winner = ("P1 (red) wins!" if tank is tank2
+                                              else "P2 (blue) wins!")
+                                    print(f"[life] {tank_label(tank)} 命已用尽，"
+                                          f"本局结束")
+                            break
+
+                shake = max(0.0, shake - 0.9)
+                if toast["frames"] > 0:
+                    toast["frames"] -= 1
 
         for tank in (tank1, tank2):
             tank.sync_image()
@@ -2527,7 +2566,7 @@ def main():
             pad_text = (f"Pads: {len(pads)} connected"
                         + (f" ({raw_n} raw mode)" if raw_n else "")
                         + f" - L-stick drive, {pad_fire_label()} fire, "
-                          "LB+RB 1P-2P, LB+X AI, Start/fire rematch")
+                          "LB+RB 1P-2P, LB+X AI, Start(+)/fire rematch")
         else:
             pad_text = "No gamepad - plug in a controller (auto-detect)"
         pad_hint = small_font.render(pad_text, True, GRAY)
@@ -2550,11 +2589,26 @@ def main():
         draw_lives(screen, tank2,
                    SCREEN_WIDTH - 12 - lives_pips_width(), 54)
 
-        # 胜负提示
-        if winner:
+        # 切模式后等待开始 / 胜负提示
+        if awaiting_start and bind_state["slot"] is None:
+            if mode == "1p":
+                title = (f"1P vs CPU ({AI_SKILLS[ai_skill]['label']})"
+                         if tank_coach.ASCII_ONLY else
+                         f"单人 vs 电脑（{AI_SKILLS[ai_skill]['label']}）")
+            else:
+                title = "2P Duel" if tank_coach.ASCII_ONLY else "双人对战"
+            text = big_font.render(title, True, WHITE)
+            sub = font.render(
+                "Start (+) / R / fire to begin    "
+                "F2/LB+RB mode  F3/LB+X AI", True, GRAY)
+            screen.blit(text, text.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
+            screen.blit(sub, sub.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
+        elif winner:
             text = big_font.render(winner, True, WHITE)
             sub = font.render(
-                "R/Start/fire rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
+                "R/Start(+)/fire rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
                 "F4 fire  F5 coach  ESC quit", True, GRAY)
             screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
             screen.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
