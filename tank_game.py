@@ -3,6 +3,7 @@ import math
 import os
 import random
 import sys
+import time
 
 import pygame
 
@@ -363,8 +364,16 @@ PAD_FIRE_DEFAULT_BUTTONS = (pygame.CONTROLLER_BUTTON_A, pygame.CONTROLLER_BUTTON
                             pygame.CONTROLLER_BUTTON_LEFTSHOULDER,
                             pygame.CONTROLLER_BUTTON_RIGHTSHOULDER)
 PAD_FIRE_BUTTONS = _env_ints("TANK_PAD_FIRE", PAD_FIRE_DEFAULT_BUTTONS)
-PAD_RESTART_BUTTONS = (pygame.CONTROLLER_BUTTON_START,
-                       pygame.CONTROLLER_BUTTON_BACK)
+# 菜单：优先专用键；8BitDo 等经 Apple MFI 时 START/BACK/摇杆键常读不到，
+# 再用「双肩键 / LB+X」和弦兜底（这两路 ABXY·肩键一定能读到）。
+PAD_MODE_BUTTONS = (pygame.CONTROLLER_BUTTON_BACK,
+                    pygame.CONTROLLER_BUTTON_GUIDE)
+PAD_DIFFICULTY_BUTTONS = (pygame.CONTROLLER_BUTTON_RIGHTSTICK,
+                          pygame.CONTROLLER_BUTTON_LEFTSTICK)
+PAD_RESTART_BUTTONS = (pygame.CONTROLLER_BUTTON_START,)
+PAD_MENU_LB = pygame.CONTROLLER_BUTTON_LEFTSHOULDER
+PAD_MENU_RB = pygame.CONTROLLER_BUTTON_RIGHTSHOULDER
+PAD_MENU_DIFF_FACE = pygame.CONTROLLER_BUTTON_X   # LB 按住 + X = 切难度
 
 # --- 非标准手柄兜底（原始 joystick 通道）---
 # SDL 只把「查得到映射表」的设备当成 GameController（XInput、Switch Pro、
@@ -1247,8 +1256,17 @@ class Gamepad:
         self.name = name or f"Gamepad {index}"
         self.prev_fire = False
         self.prev_restart = False
+        self.prev_mode = False
+        self.prev_difficulty = False
         self._fire_edge = False
         self._restart_edge = False
+        self._mode_edge = False
+        self._difficulty_edge = False
+        # CONTROLLERBUTTONDOWN 闩锁：部分 MFI 手柄 get_button(START/BACK) 一直
+        # 为假，但事件能到；poll 时并入上升沿，用完清掉。
+        self._latch_mode = False
+        self._latch_difficulty = False
+        self._latch_restart = False
         if self.controller is None:
             self._open(index)
         # 原始模式（RawController）：扳机轴号不可靠，默认只认按钮
@@ -1375,13 +1393,52 @@ class Gamepad:
     def restart_held(self):
         return self._button(PAD_RESTART_BUTTONS)
 
+    def mode_held(self):
+        """BACK/GUIDE，或双肩键同时按住（MFI 兜底）。"""
+        if self._button(PAD_MODE_BUTTONS):
+            return True
+        return (self._button((PAD_MENU_LB,)) and self._button((PAD_MENU_RB,)))
+
+    def difficulty_held(self):
+        """摇杆键，或 LB 按住 + X（MFI 兜底；此时不配 RB，避免跟切模式和弦打架）。"""
+        if self._button(PAD_DIFFICULTY_BUTTONS):
+            return True
+        return (self._button((PAD_MENU_LB,))
+                and self._button((PAD_MENU_DIFF_FACE,))
+                and not self._button((PAD_MENU_RB,)))
+
+    def latch_menu_button(self, button):
+        """事件路径：把 CONTROLLERBUTTONDOWN 的语义按钮记成下一帧边沿。"""
+        try:
+            btn = int(button)
+        except (TypeError, ValueError):
+            return False
+        if btn in PAD_MODE_BUTTONS:
+            self._latch_mode = True
+            return True
+        if btn in PAD_DIFFICULTY_BUTTONS:
+            self._latch_difficulty = True
+            return True
+        if btn in PAD_RESTART_BUTTONS:
+            self._latch_restart = True
+            return True
+        return False
+
     def poll(self):
         """每帧刷新一次；把“按住”变成“按下那一帧”的上升沿。"""
         fire = self.fire_held()
         restart = self.restart_held()
+        mode = self.mode_held()
+        difficulty = self.difficulty_held()
         self._fire_edge = fire and not self.prev_fire
-        self._restart_edge = restart and not self.prev_restart
+        self._restart_edge = ((restart and not self.prev_restart)
+                              or self._latch_restart)
+        self._mode_edge = (mode and not self.prev_mode) or self._latch_mode
+        self._difficulty_edge = ((difficulty and not self.prev_difficulty)
+                                 or self._latch_difficulty)
+        self._latch_mode = self._latch_difficulty = self._latch_restart = False
         self.prev_fire, self.prev_restart = fire, restart
+        self.prev_mode, self.prev_difficulty = mode, difficulty
         return self
 
     def fire_edge(self):
@@ -1390,6 +1447,18 @@ class Gamepad:
 
     def restart_edge(self):
         return self._restart_edge
+
+    def mode_edge(self):
+        """切 1P↔2P（须先 poll()）。"""
+        return self._mode_edge
+
+    def difficulty_edge(self):
+        """循环 AI 难度（须先 poll()）。"""
+        return self._difficulty_edge
+
+    def menu_consumed_fire(self):
+        """本帧菜单和弦占用了肩键/X，开火应让路，避免误开枪。"""
+        return self._mode_edge or self._difficulty_edge
 
     def rumble(self, ms=PAD_RUMBLE_MS, strength=0.8):
         """震动；不支持的手柄（有线猎户座青春版等）静默失败。"""
@@ -1684,8 +1753,39 @@ def describe_joysticks():
     return rows
 
 
+def wait_for_joysticks(frames=30, frame_dt=1.0 / 60.0):
+    """窗口创建后短暂泵事件，等 SDL 把手柄枚举出来。
+
+    macOS 上经 Apple Game Controller / MFI 暴露的蓝牙手柄（如 8BitDo
+    Ultimate 3mode Xbox）在 set_mode 当下 get_count() 仍是 0，必须至少
+    处理一轮 JOYDEVICEADDED / CONTROLLERDEVICEADDED 才会现身。dummy
+    视频驱动下没有真设备，泵完仍是 0，行为与以前一致。
+    """
+    try:
+        if pygame.joystick.get_count() > 0:
+            return pygame.joystick.get_count()
+    except Exception:
+        return 0
+    for _ in range(max(0, int(frames))):
+        try:
+            pygame.event.pump()
+        except Exception:
+            break
+        try:
+            if pygame.joystick.get_count() > 0:
+                return pygame.joystick.get_count()
+        except Exception:
+            return 0
+        time.sleep(frame_dt)
+    try:
+        return pygame.joystick.get_count()
+    except Exception:
+        return 0
+
+
 def print_pad_scan():
     """`python tank_game.py --pad-scan`：打印机柄识别结果 + 排错建议。"""
+    wait_for_joysticks()
     rows = describe_joysticks()
     print("=== 手柄扫描 ===")
     print(f"pygame {pygame.version.ver} / SDL {pygame.version.SDL} / {sys.platform}")
@@ -1694,8 +1794,11 @@ def print_pad_scan():
     if not rows:
         print("没有检测到任何手柄设备（HID joystick 数量 = 0）。")
         print("- 先确认系统层面能看到它：Windows「设置 → 蓝牙和其他设备」，"
-              "macOS「系统信息 → USB」")
+              "macOS「系统信息 → USB」/「蓝牙」")
         print("- 有线务必用数据线（不少线只能充电）；无线用 2.4G 接收器或先完成蓝牙配对")
+        if sys.platform == "darwin":
+            print("- macOS 蓝牙手柄常走 Apple Game Controller：需真实窗口"
+                  "（不要 SDL_VIDEODRIVER=dummy）；仍为 0 时优先试 2.4G/USB")
         return
     for row in rows:
         if row["is_controller"]:
@@ -1973,7 +2076,8 @@ def main():
     coach_panel = False      # F5：实时评估面板
 
     tank1, tank2 = reset()
-    rebuild_pads()   # 覆盖“启动时手柄已经插好”的情况
+    wait_for_joysticks()   # macOS 蓝牙/MFI：set_mode 后需泵事件才枚举得到
+    rebuild_pads()         # 覆盖“启动时手柄已经插好”的情况
     bind_pads()
     winner = None
     shake = 0.0
@@ -2082,6 +2186,53 @@ def main():
         print(f"[keys] 已恢复默认开火键：P1 SPACE / P2 ENTER / 手柄 {pad_fire_label()}"
               f"{'，已保存' if ok else '，保存失败：' + str(info)}")
 
+    def set_toast(text, frames=120):
+        """屏幕中央短提示（模式/难度/教练共用）。"""
+        toast["text"], toast["frames"] = text, frames
+
+    def toggle_mode():
+        """F2 / BACK：双人 ↔ 单人 vs 电脑（切换即重开一局）。"""
+        nonlocal mode, tank1, tank2, winner, shake
+        mode = "2p" if mode == "1p" else "1p"
+        tank1, tank2 = reset()
+        bind_pads()
+        winner = None
+        shake = 0.0
+        if mode == "1p":
+            label = AI_SKILLS[ai_skill]["label"]
+            msg = (f"Mode: 1P vs CPU ({label})"
+                   if tank_coach.ASCII_ONLY else
+                   f"模式：单人 vs 电脑（{label}）")
+            print("[mode] 已切换为单人 vs 电脑")
+        else:
+            msg = ("Mode: 2P duel" if tank_coach.ASCII_ONLY else "模式：双人对战")
+            print("[mode] 已切换为双人对战")
+        set_toast(msg)
+        return True
+
+    def cycle_difficulty():
+        """F3 / 右摇杆按下：EASY → NORMAL → HARD 循环。"""
+        nonlocal ai_skill
+        ai_skill = AI_SKILL_ORDER[
+            (AI_SKILL_ORDER.index(ai_skill) + 1) % len(AI_SKILL_ORDER)]
+        if tank2.ai is not None:
+            tank2.ai.set_skill(ai_skill)
+        if coach is not None:
+            coach.skill_label = AI_SKILLS[ai_skill]["label"]
+        label = AI_SKILLS[ai_skill]["label"]
+        print(f"[ai] 难度 → {label}")
+        set_toast(f"AI: {label}" if tank_coach.ASCII_ONLY else f"难度：{label}")
+        return True
+
+    def rematch():
+        """R / START：胜负后重开一局。"""
+        nonlocal tank1, tank2, winner, shake
+        tank1, tank2 = reset()
+        winner = None
+        shake = 0.0
+        set_toast("Rematch" if tank_coach.ASCII_ONLY else "再来一局")
+        return True
+
     def handle_config_key(key, slot):
         """面板按键分发：这期间所有按键都归面板，不会再触发开火。"""
         if key in (pygame.K_ESCAPE, pygame.K_F4):
@@ -2126,6 +2277,23 @@ def main():
             elif event.type in PAD_BUTTON_EVENTS and bind_state["slot"] == "pad":
                 # 配置面板的手柄槽位：按下哪个按钮就把它当开火键
                 apply_pad_fire(getattr(event, "button", None))
+            elif (event.type == getattr(pygame, "CONTROLLERBUTTONDOWN", -1)
+                  and bind_state["slot"] is None):
+                # MFI 上 get_button(START/BACK) 可能一直为假，事件里的语义号仍可用
+                btn = getattr(event, "button", None)
+                inst = getattr(event, "instance_id",
+                               getattr(event, "which", -1))
+                target = tank_of_pad(inst)
+                hit = False
+                if target is not None and target.pad is not None:
+                    hit = target.pad.latch_menu_button(btn)
+                if not hit:
+                    for pad in pads:
+                        if pad.latch_menu_button(btn):
+                            break
+                if PAD_DEBUG:
+                    print(f"[pad] CONTROLLERBUTTONDOWN button={btn} "
+                          f"latch={'yes' if hit else 'broadcast'}")
             elif PAD_DEBUG and event.type in PAD_BUTTON_EVENTS:
                 print(f"[pad] {pygame.event.event_name(event.type)} "
                       f"joy={getattr(event, 'joy', '?')} "
@@ -2143,23 +2311,9 @@ def main():
                     print(f"[keys] 打开攻击键配置：P1={fire_names['p1'].upper()} "
                           f"P2={fire_names['p2'].upper()} 手柄={pad_fire_label()}")
                 elif event.key == pygame.K_F2:
-                    # F2：双人 <-> 单人 vs 电脑（切换即重开一局）
-                    mode = "2p" if mode == "1p" else "1p"
-                    tank1, tank2 = reset()
-                    bind_pads()
-                    winner = None
-                    shake = 0.0
-                    print("[mode] 已切换为 " +
-                          ("单人 vs 电脑" if mode == "1p" else "双人对战"))
+                    toggle_mode()
                 elif event.key == pygame.K_F3:
-                    # F3：EASY -> NORMAL -> HARD 循环（单人模式才有效果）
-                    ai_skill = AI_SKILL_ORDER[
-                        (AI_SKILL_ORDER.index(ai_skill) + 1) % len(AI_SKILL_ORDER)]
-                    if tank2.ai is not None:
-                        tank2.ai.set_skill(ai_skill)
-                    if coach is not None:
-                        coach.skill_label = AI_SKILLS[ai_skill]["label"]
-                    print(f"[ai] 难度 → {AI_SKILLS[ai_skill]['label']}")
+                    cycle_difficulty()
                 elif event.key == pygame.K_F5:
                     # F5：实时评估面板（局末报告不受它影响，总会显示）
                     coach_panel = not coach_panel
@@ -2170,9 +2324,7 @@ def main():
                               f"（本局累计到第 {coach.metrics()['frames']} 帧）")
                 elif winner is not None:
                     if event.key == pygame.K_r:
-                        tank1, tank2 = reset()
-                        winner = None
-                        shake = 0.0
+                        rematch()
                 else:
                     for tank in (tank1, tank2):
                         if tank.ai is not None or not tank.controls:
@@ -2186,12 +2338,22 @@ def main():
         # 配置面板打开时暂停对战（按键全归面板），但照常渲染，方便边看边改
         paused = bind_state["slot"] is not None
 
+        menu_ate_fire = False
         if not paused:
-            # 手柄 Start/Back 重开（用上升沿，按住不会反复重开）
-            if winner is not None and any(pad.restart_edge() for pad in pads):
-                tank1, tank2 = reset()
-                winner = None
-                shake = 0.0
+            # 手柄菜单：专用键 / 事件闩锁 / LB+RB·LB+X 和弦；
+            # 胜负后 START 或任意开火键都可重开（开火键在 MFI 上最可靠）
+            if any(pad.mode_edge() for pad in pads):
+                toggle_mode()
+                menu_ate_fire = True
+            elif any(pad.difficulty_edge() for pad in pads):
+                cycle_difficulty()
+                menu_ate_fire = True
+            elif winner is not None and any(
+                    pad.restart_edge() or pad.fire_edge() for pad in pads):
+                rematch()
+                menu_ate_fire = True
+            if not menu_ate_fire:
+                menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
 
             for tank in (tank1, tank2):
                 tank.tick()
@@ -2218,7 +2380,8 @@ def main():
                 else:
                     # 键盘 + 手柄合成，无手柄时 = handle_input
                     tank.poll_controls(keys, dt)
-                    if tank.pad is not None and tank.pad.fire_edge():
+                    if (tank.pad is not None and tank.pad.fire_edge()
+                            and not menu_ate_fire):
                         try_fire(tank)
                     if coach is not None and tank is tank1:
                         # 开火键是否还按着：判断「按住不放」这种最常见的误用
@@ -2230,7 +2393,8 @@ def main():
                         coach.observe(tank, tank2, held)
                         hint = coach.new_hint()
                         if hint:
-                            toast["text"], toast["frames"] = hint[1], 150
+                            toast["text"] = "COACH: " + hint[1]
+                            toast["frames"] = 150
                             print(f"[coach] 即时提示：{hint[1]}")
 
             # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
@@ -2348,7 +2512,7 @@ def main():
         screen.blit(hint1, (12, 10))
         screen.blit(hint2, (SCREEN_WIDTH - hint2.get_width() - 12, 10))
 
-        # 模式提示（F2 切模式 / F3 切难度 / F4 改开火键，随时可按）
+        # 模式提示（键盘 F2/F3；有手柄时另见底栏 Back / R-stick）
         mode_text = (f"Mode: 1P vs CPU - F2 switch, F3 AI level "
                      f"({AI_SKILLS[ai_skill]['label']}), F4 fire keys, F5 coach"
                      if mode == "1p" else
@@ -2363,7 +2527,7 @@ def main():
             pad_text = (f"Pads: {len(pads)} connected"
                         + (f" ({raw_n} raw mode)" if raw_n else "")
                         + f" - L-stick drive, {pad_fire_label()} fire, "
-                          "Start restart")
+                          "LB+RB 1P-2P, LB+X AI, Start/fire rematch")
         else:
             pad_text = "No gamepad - plug in a controller (auto-detect)"
         pad_hint = small_font.render(pad_text, True, GRAY)
@@ -2389,8 +2553,9 @@ def main():
         # 胜负提示
         if winner:
             text = big_font.render(winner, True, WHITE)
-            sub = font.render("R / Start restart   F2 1P-2P   F3 AI level   "
-                              "F4 fire keys   F5 coach   ESC quit", True, GRAY)
+            sub = font.render(
+                "R/Start/fire rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
+                "F4 fire  F5 coach  ESC quit", True, GRAY)
             screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
             screen.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
 
@@ -2408,7 +2573,7 @@ def main():
 
         # 即时纠正提示（新触发的误用只在屏幕上挂 2.5 秒，不打断对局）
         if toast["frames"] > 0 and toast["text"]:
-            tip = small_font.render(_fit_text(small_font, "COACH: " + toast["text"], 560),
+            tip = small_font.render(_fit_text(small_font, toast["text"], 560),
                                     True, (250, 196, 130))
             bg = pygame.Surface((tip.get_width() + 16, tip.get_height() + 8),
                                 pygame.SRCALPHA)

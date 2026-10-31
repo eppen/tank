@@ -239,7 +239,7 @@ fc.buttons.clear()
 pad.poll()
 assert not pad.fire_held()
 
-# Start/Back 重开上升沿
+# Start 重开上升沿
 start = pygame.CONTROLLER_BUTTON_START
 fc.buttons[start] = True
 pad.poll()
@@ -250,7 +250,63 @@ fc.buttons[start] = False
 pad.poll()
 pad.poll()
 assert not pad.restart_edge()
-print("[3] 开火/扳机/Start 上升沿 OK：按住只触发一次")
+
+# BACK：切 1P↔2P 上升沿
+fc.buttons.clear()
+back = pygame.CONTROLLER_BUTTON_BACK
+fc.buttons[back] = True
+pad.poll()
+assert pad.mode_edge(), "BACK 第一次按下应产生 mode 上升沿"
+assert not pad.restart_edge(), "BACK 不应再触发 restart"
+pad.poll()
+assert not pad.mode_edge(), "按住 BACK 不应反复切模式"
+fc.buttons[back] = False
+pad.poll()
+
+# 右摇杆按下：循环 AI 难度上升沿
+fc.buttons.clear()
+rstick = pygame.CONTROLLER_BUTTON_RIGHTSTICK
+fc.buttons[rstick] = True
+pad.poll()
+assert pad.difficulty_edge(), "RSTICK 第一次按下应产生 difficulty 上升沿"
+pad.poll()
+assert not pad.difficulty_edge(), "按住 RSTICK 不应反复切难度"
+fc.buttons[rstick] = False
+pad.poll()
+
+# MFI 兜底和弦：LB+RB = 切模式，LB+X = 切难度
+fc.buttons.clear()
+lb = pygame.CONTROLLER_BUTTON_LEFTSHOULDER
+rb = pygame.CONTROLLER_BUTTON_RIGHTSHOULDER
+xbtn = pygame.CONTROLLER_BUTTON_X
+fc.buttons[lb] = True
+pad.poll()
+assert not pad.mode_edge(), "只按 LB 不应切模式"
+fc.buttons[rb] = True
+pad.poll()
+assert pad.mode_edge(), "LB+RB 应切模式"
+assert pad.menu_consumed_fire(), "菜单和弦应占用开火"
+pad.poll()
+assert not pad.mode_edge()
+fc.buttons.clear()
+pad.poll()
+
+fc.buttons[lb] = True
+fc.buttons[xbtn] = True
+pad.poll()
+assert pad.difficulty_edge(), "LB+X 应切难度"
+pad.poll()
+assert not pad.difficulty_edge()
+fc.buttons.clear()
+pad.poll()
+
+# 事件闩锁：get_button 为假时仍能靠 latch 出边沿
+pad.latch_menu_button(pygame.CONTROLLER_BUTTON_START)
+pad.poll()
+assert pad.restart_edge(), "START 闩锁应变成 restart 边沿"
+pad.poll()
+assert not pad.restart_edge()
+print("[3] 开火/扳机/Start/BACK/RSTICK/LB+RB/LB+X/闩锁 上升沿 OK")
 
 # --------------------------------------------- 4) 震动：支持与不支持都不崩
 pad.rumble(180, 0.8)
