@@ -264,23 +264,30 @@ RESPAWN_CORNERS = ((120, 120), (SCREEN_WIDTH - 120, 120),
                    (120, SCREEN_HEIGHT - 120),
                    (SCREEN_WIDTH - 120, SCREEN_HEIGHT - 120))
 
-# --- 障碍物（掩体）：挡车、挡子弹、挡住视线 ---
-# 布局是写死的常量（不随机），因为截图、自测和 1p/2p 公平性都依赖确定性。
-# 改布局必须同时满足三条硬约束（`_selftest_walls.py [1]` 逐条断言）：
-#   1) 180° 旋转对称：每块绕屏幕中心转 180° 后仍在集合里。否则两个出生角的
-#      主场优势不一样，1p 模式下玩家会吃布局的亏。
+# --- 障碍物（掩体）/ 多地图 ---
+# 每张图的 rects 都必须满足三条硬约束（`_selftest_walls.py` 对非空图逐张断言）：
+#   1) 180° 旋转对称：每块绕屏幕中心转 180° 后仍在集合里。
 #   2) 不压出生点 / 复活角：到 RESPAWN_CORNERS 的距离 >= TANK_HALF + 40。
-#      否则复活瞬间车体就卡在方块里。
-#   3) 不挡两条出生对角线：开局第一枪的视线必须是通的，否则必须先进攻绕半圈。
-# 另外 min(w, h) 必须 >= BULLET_SPEED * 2：子弹一帧走 9px，方块太薄会被穿过。
-# TANK_WALLS=0 整体关掉障碍物（和 TANK_COACH=0 同风格），用来排查
-# 「是不是墙导致的」问题。
+#   3) 不挡两条出生对角线：开局第一枪视线必须通。
+# 另外 min(w, h) >= BULLET_SPEED * 2。TANK_WALLS=0 时所有地图都建成空组。
+# 切图只在「等待开始」界面（键盘 M / 手柄 RB+Y）；开打后本局锁定。
 OBSTACLE_ENABLED = os.environ.get("TANK_WALLS", "1") != "0"
 OBSTACLE_SIZE = 56
-OBSTACLE_RECTS = ((240, 120, OBSTACLE_SIZE, OBSTACLE_SIZE),
-                  (240, 300, OBSTACLE_SIZE, OBSTACLE_SIZE),
-                  (504, 244, OBSTACLE_SIZE, OBSTACLE_SIZE),
-                  (504, 424, OBSTACLE_SIZE, OBSTACLE_SIZE))
+_MAP_PILLARS = ((240, 120, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                (240, 300, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                (504, 244, OBSTACLE_SIZE, OBSTACLE_SIZE),
+                (504, 424, OBSTACLE_SIZE, OBSTACLE_SIZE))
+# 中线上下两条横廊（180° 对称），不挡出生对角线
+_MAP_CORRIDORS = ((280, 180, 240, 40),
+                  (280, 380, 240, 40))
+MAPS = (
+    {"id": "empty", "label": "EMPTY", "rects": ()},
+    {"id": "pillars", "label": "PILLARS", "rects": _MAP_PILLARS},
+    {"id": "corridors", "label": "CORRIDORS", "rects": _MAP_CORRIDORS},
+)
+DEFAULT_MAP_INDEX = next(i for i, m in enumerate(MAPS) if m["id"] == "pillars")
+# 兼容旧自测 / 文档：默认等于 pillars 的 rects；运行中切图会改这个引用
+OBSTACLE_RECTS = MAPS[DEFAULT_MAP_INDEX]["rects"]
 
 
 # --- 单人 vs 电脑参数 ---
@@ -374,6 +381,7 @@ PAD_RESTART_BUTTONS = (pygame.CONTROLLER_BUTTON_START,)
 PAD_MENU_LB = pygame.CONTROLLER_BUTTON_LEFTSHOULDER
 PAD_MENU_RB = pygame.CONTROLLER_BUTTON_RIGHTSHOULDER
 PAD_MENU_DIFF_FACE = pygame.CONTROLLER_BUTTON_X   # LB 按住 + X = 切难度
+PAD_MENU_MAP_FACE = pygame.CONTROLLER_BUTTON_Y    # RB 按住 + Y = 切地图（仅等待开始）
 
 # --- 非标准手柄兜底（原始 joystick 通道）---
 # SDL 只把「查得到映射表」的设备当成 GameController（XInput、Switch Pro、
@@ -397,8 +405,9 @@ FIRE_KEY_DEFAULTS = {"p1": "space", "p2": "return"}
 FIRE_SLOTS = ("p1", "p2")
 KEYS_CONFIG_PATH = os.environ.get("TANK_KEYS_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "tank_keys.json")
-# ESC 退出、F2/F3 切模式与难度、F4 开配置面板、F5 评估面板，都不允许被抢作开火键
-RESERVED_KEY_NAMES = frozenset({"escape", "esc", "f1", "f2", "f3", "f4", "f5"})
+# ESC 退出、F2/F3 切模式与难度、F4 开配置、F5 评估、M 切地图，都不允许被抢作开火键
+RESERVED_KEY_NAMES = frozenset(
+    {"escape", "esc", "f1", "f2", "f3", "f4", "f5", "m"})
 PAD_BUTTON_MAX = getattr(pygame, "CONTROLLER_BUTTON_MAX", 11)
 PAD_BUTTON_LABELS = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "BACK", 5: "GUIDE",
                      6: "START", 7: "LSTICK", 8: "RSTICK", 9: "LB", 10: "RB",
@@ -447,8 +456,8 @@ def check_fire_key(name, other_name=None, ascii_only=False):
         return None, msg(f"无法识别的按键 {name!r}", f"unknown key {name!r}")
     norm = key_code_to_name(code)
     if norm in RESERVED_KEY_NAMES:
-        return None, msg(f"{norm.upper()} 是系统保留键（ESC 退出 / F2-F5 功能键）",
-                         f"{norm.upper()} is reserved (ESC quit / F2-F5)")
+        return None, msg(f"{norm.upper()} 是系统保留键（ESC / F2-F5 / M）",
+                         f"{norm.upper()} is reserved (ESC / F2-F5 / M)")
     if other_name:
         other_code = key_name_to_code(other_name)
         if other_code is not None and other_code == code:
@@ -1185,14 +1194,29 @@ class Obstacle(pygame.sprite.Sprite):
         self.image = surf
 
 
-def build_obstacles():
-    """按 OBSTACLE_RECTS 建出掩体；TANK_WALLS=0 时返回空组（= 无障碍物）。
+def map_rects(map_index):
+    """给定地图索引的障碍物规格；越界回退到默认 pillars。"""
+    if not (0 <= int(map_index) < len(MAPS)):
+        map_index = DEFAULT_MAP_INDEX
+    return MAPS[int(map_index)]["rects"]
 
-    只在开局建一次：R / START 重开不重建，布局永远一致（截图与自测都靠这个）。
+
+def map_label(map_index):
+    if not (0 <= int(map_index) < len(MAPS)):
+        map_index = DEFAULT_MAP_INDEX
+    return MAPS[int(map_index)]["label"]
+
+
+def build_obstacles(map_index=None):
+    """按指定地图建掩体；TANK_WALLS=0 时返回空组。
+
+    map_index 默认 pillars。运行中切图会清组重建；R / START 重开不换图。
     """
+    if map_index is None:
+        map_index = DEFAULT_MAP_INDEX
     group = pygame.sprite.Group()
     if OBSTACLE_ENABLED:
-        for spec in OBSTACLE_RECTS:
+        for spec in map_rects(map_index):
             group.add(Obstacle(spec))
     return group
 
@@ -1258,10 +1282,12 @@ class Gamepad:
         self.prev_restart = False
         self.prev_mode = False
         self.prev_difficulty = False
+        self.prev_map = False
         self._fire_edge = False
         self._restart_edge = False
         self._mode_edge = False
         self._difficulty_edge = False
+        self._map_edge = False
         # CONTROLLERBUTTONDOWN 闩锁：部分 MFI 手柄 get_button(START/BACK) 一直
         # 为假，但事件能到；poll 时并入上升沿，用完清掉。
         self._latch_mode = False
@@ -1407,6 +1433,12 @@ class Gamepad:
                 and self._button((PAD_MENU_DIFF_FACE,))
                 and not self._button((PAD_MENU_RB,)))
 
+    def map_held(self):
+        """RB 按住 + Y：切地图（仅等待开始时主循环才认）。"""
+        return (self._button((PAD_MENU_RB,))
+                and self._button((PAD_MENU_MAP_FACE,))
+                and not self._button((PAD_MENU_LB,)))
+
     def latch_menu_button(self, button):
         """事件路径：把 CONTROLLERBUTTONDOWN 的语义按钮记成下一帧边沿。"""
         try:
@@ -1430,15 +1462,18 @@ class Gamepad:
         restart = self.restart_held()
         mode = self.mode_held()
         difficulty = self.difficulty_held()
+        map_btn = self.map_held()
         self._fire_edge = fire and not self.prev_fire
         self._restart_edge = ((restart and not self.prev_restart)
                               or self._latch_restart)
         self._mode_edge = (mode and not self.prev_mode) or self._latch_mode
         self._difficulty_edge = ((difficulty and not self.prev_difficulty)
                                  or self._latch_difficulty)
+        self._map_edge = map_btn and not self.prev_map
         self._latch_mode = self._latch_difficulty = self._latch_restart = False
         self.prev_fire, self.prev_restart = fire, restart
         self.prev_mode, self.prev_difficulty = mode, difficulty
+        self.prev_map = map_btn
         return self
 
     def fire_edge(self):
@@ -1456,9 +1491,13 @@ class Gamepad:
         """循环 AI 难度（须先 poll()）。"""
         return self._difficulty_edge
 
+    def map_edge(self):
+        """切地图（须先 poll()；主循环仅在 awaiting_start 时响应）。"""
+        return self._map_edge
+
     def menu_consumed_fire(self):
-        """本帧菜单和弦占用了肩键/X，开火应让路，避免误开枪。"""
-        return self._mode_edge or self._difficulty_edge
+        """本帧菜单和弦占用了肩键/面键，开火应让路，避免误开枪。"""
+        return self._mode_edge or self._difficulty_edge or self._map_edge
 
     def rumble(self, ms=PAD_RUMBLE_MS, strength=0.8):
         """震动；不支持的手柄（有线猎户座青春版等）静默失败。"""
@@ -1938,8 +1977,8 @@ def main():
     else:
         print("[coach] 评估已关闭（TANK_COACH=0）")
     if OBSTACLE_ENABLED:
-        print(f"[walls] {len(OBSTACLE_RECTS)} 个掩体方块：挡车、挡子弹、挡视线，"
-              f"隔墙 AI 不开枪（TANK_WALLS=0 可关掉）")
+        print(f"[walls] 地图 {len(MAPS)} 张（默认 {map_label(DEFAULT_MAP_INDEX)}）；"
+              f"等待开始时按 M / RB+Y 切换；TANK_WALLS=0 可关掉全部掩体")
     else:
         print("[walls] 障碍物已关闭（TANK_WALLS=0）")
     # 字体：找不到带汉字的字体就把屏幕文案切英文（否则中文会画成方块）
@@ -1958,9 +1997,12 @@ def main():
     tanks = pygame.sprite.Group()
     bullets = pygame.sprite.Group()
     explosions = pygame.sprite.Group()
-    # 掩体只建一次：R / START 重开不重建，布局每局都一样（截图与自测依赖它）
-    obstacles = build_obstacles()
+    map_index = DEFAULT_MAP_INDEX
+    obstacles = build_obstacles(map_index)
     walls = tuple(ob.rect for ob in obstacles)   # 纯函数用的矩形；空组 = 无障碍物
+    # 兼容旧代码/自测读模块级 OBSTACLE_RECTS：切图时同步
+    global OBSTACLE_RECTS
+    OBSTACLE_RECTS = map_rects(map_index)
 
     # --- 手柄设备管理（就地修改 pads 列表，闭包内外共享同一份）---
     pads = []
@@ -2192,12 +2234,40 @@ def main():
         """屏幕中央短提示（模式/难度/教练共用）。"""
         toast["text"], toast["frames"] = text, frames
 
+    def apply_map():
+        """按 map_index 重建掩体，并挂到当前两台坦克上。"""
+        nonlocal obstacles, walls, tank1, tank2
+        global OBSTACLE_RECTS
+        obstacles.empty()
+        for ob in build_obstacles(map_index):
+            obstacles.add(ob)
+        walls = tuple(ob.rect for ob in obstacles)
+        OBSTACLE_RECTS = map_rects(map_index)
+        if tank1 is not None:
+            tank1.obstacles = walls
+        if tank2 is not None:
+            tank2.obstacles = walls
+        return walls
+
+    def cycle_map():
+        """仅等待开始时可切：empty → pillars → corridors → …"""
+        nonlocal map_index
+        if not awaiting_start:
+            return False
+        map_index = (map_index + 1) % len(MAPS)
+        apply_map()
+        label = map_label(map_index)
+        print(f"[walls] 地图 → {label}（{MAPS[map_index]['id']}）")
+        set_toast(f"Map: {label}" if tank_coach.ASCII_ONLY else f"地图：{label}")
+        return True
+
     def toggle_mode():
         """F2 / LB+RB：双人 ↔ 单人 vs 电脑；摆好场地后进入等待开始。"""
         nonlocal mode, tank1, tank2, winner, shake, awaiting_start
         mode = "2p" if mode == "1p" else "1p"
         tank1, tank2 = reset()
         bind_pads()
+        apply_map()          # 保留当前 map_index，重新挂墙
         winner = None
         shake = 0.0
         awaiting_start = True
@@ -2343,7 +2413,9 @@ def main():
                         print(f"[coach] 实时面板 {'开' if coach_panel else '关'}"
                               f"（本局累计到第 {coach.metrics()['frames']} 帧）")
                 elif awaiting_start:
-                    if event.key == pygame.K_r:
+                    if event.key == pygame.K_m:
+                        cycle_map()
+                    elif event.key == pygame.K_r:
                         confirm_start()
                     else:
                         for tank in (tank1, tank2):
@@ -2377,6 +2449,9 @@ def main():
                 menu_ate_fire = True
             elif any(pad.difficulty_edge() for pad in pads):
                 cycle_difficulty()
+                menu_ate_fire = True
+            elif awaiting_start and any(pad.map_edge() for pad in pads):
+                cycle_map()
                 menu_ate_fire = True
             elif awaiting_start and any(
                     pad.restart_edge() or pad.fire_edge() for pad in pads):
@@ -2566,7 +2641,7 @@ def main():
             pad_text = (f"Pads: {len(pads)} connected"
                         + (f" ({raw_n} raw mode)" if raw_n else "")
                         + f" - L-stick drive, {pad_fire_label()} fire, "
-                          "LB+RB 1P-2P, LB+X AI, Start(+)/fire rematch")
+                          "LB+RB 1P-2P, LB+X AI, RB+Y map, Start(+)/fire")
         else:
             pad_text = "No gamepad - plug in a controller (auto-detect)"
         pad_hint = small_font.render(pad_text, True, GRAY)
@@ -2601,10 +2676,14 @@ def main():
             sub = font.render(
                 "Start (+) / R / fire to begin    "
                 "F2/LB+RB mode  F3/LB+X AI", True, GRAY)
+            map_line = font.render(
+                f"Map: {map_label(map_index)}  (M / RB+Y)", True, GRAY)
             screen.blit(text, text.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 28)))
             screen.blit(sub, sub.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 10)))
+            screen.blit(map_line, map_line.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40)))
         elif winner:
             text = big_font.render(winner, True, WHITE)
             sub = font.render(

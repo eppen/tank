@@ -214,6 +214,67 @@ if "--await-start" in sys.argv:
     sys.exit(0)
 
 
+def await_map_scenario():
+    """等待开始时可切地图；开打后按 M 无效。"""
+    g.MAX_LIVES = 1
+    seen = {"walls": [], "mode": []}
+
+    orig_print = builtins.print
+
+    def capturing_print(*args, **kwargs):
+        line = " ".join(str(a) for a in args)
+        if "[walls]" in line and "地图 →" in line:
+            seen["walls"].append((frame["i"], line))
+        if "[mode]" in line:
+            seen["mode"].append(line)
+        return orig_print(*args, **kwargs)
+
+    builtins.print = capturing_print
+    g.sdl2_controller = FakeSDL2([FakeController(), FakeController()])
+
+    frame = {"i": 0}
+
+    def fake_get():
+        i = frame["i"]
+        frame["i"] += 1
+        # 帧 5：F2 → awaiting_start（默认 pillars）
+        if i == 5:
+            return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F2)]
+        # 帧 15：M → corridors（pillars 的下一张）
+        if i == 15:
+            return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_m)]
+        # 帧 30：R 确认开打
+        if i == 30:
+            return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r)]
+        # 帧 50：开打后再按 M，不应再切图
+        if i == 50:
+            return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_m)]
+        if i >= 70:
+            return [pygame.event.Event(pygame.QUIT)]
+        return []
+
+    pygame.event.get = fake_get
+    try:
+        try:
+            g.main()
+        except SystemExit:
+            pass
+    finally:
+        builtins.print = orig_print
+
+    assert any("等待 Start" in m for m in seen["mode"]), seen["mode"]
+    assert any("开打" in m for m in seen["mode"]), seen["mode"]
+    assert len(seen["walls"]) == 1, seen["walls"]
+    assert seen["walls"][0][0] < 30, seen["walls"]
+    assert "CORRIDORS" in seen["walls"][0][1], seen["walls"]
+    print("AWAIT_MAP OK：等待时 M 切到 CORRIDORS，开打后再按 M 无效")
+
+
+if "--await-map" in sys.argv:
+    await_map_scenario()
+    sys.exit(0)
+
+
 def make_pad(**kw):
     return g.Gamepad(0, controller=FakeController(**kw), name="Fake Pad")
 
@@ -369,13 +430,35 @@ assert not pad.difficulty_edge()
 fc.buttons.clear()
 pad.poll()
 
+# RB+Y：切地图上升沿（与 LB+X 对称；主循环仅 awaiting_start 时响应）
+ybtn = pygame.CONTROLLER_BUTTON_Y
+fc.buttons[rb] = True
+pad.poll()
+assert not pad.map_edge(), "只按 RB 不应切地图"
+fc.buttons[ybtn] = True
+pad.poll()
+assert pad.map_edge(), "RB+Y 应切地图"
+assert pad.menu_consumed_fire(), "切地图和弦应占用开火"
+pad.poll()
+assert not pad.map_edge(), "按住 RB+Y 不应反复切地图"
+fc.buttons.clear()
+pad.poll()
+# 带 LB 时不应认成切地图（避免跟 LB+RB 模式和弦打架）
+fc.buttons[lb] = True
+fc.buttons[rb] = True
+fc.buttons[ybtn] = True
+pad.poll()
+assert not pad.map_edge(), "LB+RB+Y 不应出 map 边沿"
+fc.buttons.clear()
+pad.poll()
+
 # 事件闩锁：get_button 为假时仍能靠 latch 出边沿
 pad.latch_menu_button(pygame.CONTROLLER_BUTTON_START)
 pad.poll()
 assert pad.restart_edge(), "START 闩锁应变成 restart 边沿"
 pad.poll()
 assert not pad.restart_edge()
-print("[3] 开火/扳机/Start/BACK/RSTICK/LB+RB/LB+X/闩锁 上升沿 OK")
+print("[3] 开火/扳机/Start/BACK/RSTICK/LB+RB/LB+X/RB+Y/闩锁 上升沿 OK")
 
 # --------------------------------------------- 4) 震动：支持与不支持都不崩
 pad.rumble(180, 0.8)
@@ -546,4 +629,13 @@ print(out2)
 assert proc2.returncode == 0, f"await-start 子进程失败\n{out2}"
 assert "AWAIT_START OK" in proc2.stdout
 
-print("PAD 测试全部通过：无手柄降级/死区/归一化/Y 轴/上升沿/双柄分控/键盘等价/端到端/等待开始")
+# --------------------------------------------- 12) 等待开始切地图，开打后锁定
+proc3 = subprocess.run([sys.executable, os.path.abspath(__file__), "--await-map"],
+                       capture_output=True, text=True, env=env)
+out3 = "\n".join(l for l in (proc3.stdout + proc3.stderr).splitlines()
+                 if not l.startswith(("pygame ", "Hello from", "  from pkg")))
+print(out3)
+assert proc3.returncode == 0, f"await-map 子进程失败\n{out3}"
+assert "AWAIT_MAP OK" in proc3.stdout
+
+print("PAD 测试全部通过：无手柄降级/死区/归一化/Y 轴/上升沿/双柄分控/键盘等价/端到端/等待开始/切地图")

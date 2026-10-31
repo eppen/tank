@@ -35,19 +35,51 @@ def new_tank(x, y, color=g.RED, angle=0.0):
     return t
 
 
-def walls_from_layout():
-    return tuple(pygame.Rect(*spec) for spec in g.OBSTACLE_RECTS)
+def walls_from_rects(rects):
+    return tuple(pygame.Rect(*spec) for spec in rects)
 
 
-WALLS = walls_from_layout()
+def assert_layout_invariants(rects, map_id):
+    """三条硬约束 + 不重叠 + 厚度；empty 图应传入空 rects。"""
+    walls = walls_from_rects(rects)
+    if not walls:
+        assert map_id == "empty"
+        return walls
+    for r in walls:
+        assert 0 <= r.left and r.right <= g.SCREEN_WIDTH, (map_id, r)
+        assert 0 <= r.top and r.bottom <= g.SCREEN_HEIGHT, (map_id, r)
+        assert min(r.width, r.height) >= g.BULLET_SPEED * 2, (map_id, r)
+    for i, a in enumerate(walls):
+        for b in walls[i + 1:]:
+            assert not a.colliderect(b), f"{map_id} 方块重叠：{a} / {b}"
+    for r in walls:
+        mirror = pygame.Rect(g.SCREEN_WIDTH - r.right, g.SCREEN_HEIGHT - r.bottom,
+                             r.width, r.height)
+        assert any(mirror == other for other in walls), \
+            f"{map_id}: {r} 没有 180° 对称方块"
+    for corner in g.RESPAWN_CORNERS:
+        pos = pygame.Vector2(corner)
+        for r in walls:
+            gap = g._closest_point(pos, r).distance_to(pos)
+            assert gap >= g.TANK_HALF + 40, \
+                f"{map_id}: 复活角 {corner} 离方块 {r} 只有 {gap:.0f}px"
+    spawn_a = pygame.Vector2(g.RESPAWN_CORNERS[0])
+    spawn_b = pygame.Vector2(g.RESPAWN_CORNERS[3])
+    for a, b in ((spawn_a, spawn_b),
+                 (pygame.Vector2(g.RESPAWN_CORNERS[1]),
+                  pygame.Vector2(g.RESPAWN_CORNERS[2]))):
+        for r in walls:
+            assert not r.clipline((a.x, a.y), (b.x, b.y)), \
+                f"{map_id}: 出生对角线被 {r} 挡住"
+        assert g.has_line_of_sight(a, b, walls)
+    return walls
 
 
 # =============================================== 开关关掉时：只验证「真的没有」
 if not g.OBSTACLE_ENABLED:
-    group = g.build_obstacles()
+    group = g.build_obstacles(g.DEFAULT_MAP_INDEX)
     assert len(group) == 0, f"TANK_WALLS=0 时不该建出方块，实际 {len(group)} 个"
-    # 原本 (240,300) 那个方块的位置现在应该是空的：坦克能直接开过去
-    t = new_tank(400, 328, angle=270.0)     # 朝左，正对 240..296 那块
+    t = new_tank(400, 328, angle=270.0)
     t.obstacles = tuple(o.rect for o in group)
     for _ in range(60):
         t.drive(0.0, 1.0)
@@ -58,42 +90,28 @@ if not g.OBSTACLE_ENABLED:
     raise SystemExit(0)
 
 
-# =============================================== 1) 布局不变量
-assert WALLS, "OBSTACLE_RECTS 不能为空"
-for r in WALLS:
-    assert 0 <= r.left and r.right <= g.SCREEN_WIDTH, r
-    assert 0 <= r.top and r.bottom <= g.SCREEN_HEIGHT, r
-    # 方块太薄会被子弹一帧 9px 穿过去
-    assert min(r.width, r.height) >= g.BULLET_SPEED * 2, r
+# =============================================== 1) 每张地图的布局不变量
+assert len(g.MAPS) >= 3, g.MAPS
+assert g.MAPS[g.DEFAULT_MAP_INDEX]["id"] == "pillars"
+for m in g.MAPS:
+    if m["id"] == "empty":
+        assert m["rects"] == ()
+        group = g.build_obstacles(next(i for i, x in enumerate(g.MAPS)
+                                       if x["id"] == "empty"))
+        assert len(group) == 0
+        assert_layout_invariants((), "empty")
+        print("[1] EMPTY OK：build_obstacles → 空组")
+        continue
+    walls_m = assert_layout_invariants(m["rects"], m["id"])
+    built = g.build_obstacles(next(i for i, x in enumerate(g.MAPS)
+                                   if x["id"] == m["id"]))
+    assert len(built) == len(walls_m), (m["id"], len(built), len(walls_m))
+    print(f"[1] {m['label']} OK：{len(walls_m)} 块，"
+          f"180° 对称、离复活角 ≥{g.TANK_HALF + 40}px、不挡出生对角线")
 
-for i, a in enumerate(WALLS):
-    for b in WALLS[i + 1:]:
-        assert not a.colliderect(b), f"方块重叠：{a} / {b}"
-
-# 180° 旋转对称：绕屏幕中心转 180° 后必须还在集合里（1p/2p 的两个出生角公平）
-for r in WALLS:
-    mirror = pygame.Rect(g.SCREEN_WIDTH - r.right, g.SCREEN_HEIGHT - r.bottom,
-                         r.width, r.height)
-    assert any(mirror == other for other in WALLS), f"{r} 没有 180° 对称方块"
-
-# 不压出生点 / 复活角（车体半宽 + 40 的余量）
-for corner in g.RESPAWN_CORNERS:
-    pos = pygame.Vector2(corner)
-    for r in WALLS:
-        gap = g._closest_point(pos, r).distance_to(pos)
-        assert gap >= g.TANK_HALF + 40, f"复活角 {corner} 离方块 {r} 只有 {gap:.0f}px"
-
-# 不挡两条出生对角线（开局第一枪视线必须是通的）
-spawn_a, spawn_b = pygame.Vector2(g.RESPAWN_CORNERS[0]), pygame.Vector2(
-    g.RESPAWN_CORNERS[3])
-for a, b in ((spawn_a, spawn_b), (pygame.Vector2(g.RESPAWN_CORNERS[1]),
-                                  pygame.Vector2(g.RESPAWN_CORNERS[2]))):
-    for r in WALLS:
-        assert not r.clipline((a.x, a.y), (b.x, b.y)), f"出生对角线被 {r} 挡住"
-    assert g.has_line_of_sight(a, b, WALLS)
-
-print(f"[1] 布局 OK：{len(WALLS)} 块 {g.OBSTACLE_SIZE}x{g.OBSTACLE_SIZE} 方块，"
-      f"180° 对称、离复活角 ≥{g.TANK_HALF + 40}px、不挡两条出生对角线")
+# 后续碰撞/滑行/AI 用例仍用默认 pillars（有已知的 (240,300) 测试块）
+WALLS = walls_from_rects(g.map_rects(g.DEFAULT_MAP_INDEX))
+assert WALLS, "默认 pillars 不能为空"
 
 
 # =============================================== 2) 车体碰撞：从不陷入方块
