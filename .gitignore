@@ -8,6 +8,9 @@ tank_keys.json
 # 对战评估历史（每局一行，最多保留最近 20 局）
 tank_coach.json
 
+# 运行日志（TANK_LOG=1 时写在脚本同目录，默认关闭）
+tank_run_*.log
+
 # 系统 / 编辑器杂项
 .DS_Store
 .vscode/
