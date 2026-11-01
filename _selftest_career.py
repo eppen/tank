@@ -88,7 +88,9 @@ labels = g.main_menu_item_labels(ascii_only=True)
 assert labels[4].startswith("5"), labels
 assert "Career" in labels[4]
 assert labels[6].startswith("7")
-print("[5] 主菜单 7 项含 Career OK")
+# 子菜单退出键 = 人脸 X（与暂停键共用 pause_face_edge）
+assert g.PAD_PAUSE_FACE == __import__("pygame").CONTROLLER_BUTTON_X
+print("[5] 主菜单 7 项含 Career OK；子菜单退出 = pad X")
 
 try:
     os.remove(_CAREER_TMP)

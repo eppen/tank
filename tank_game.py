@@ -613,14 +613,14 @@ def draw_key_config(surf, font, small_font, names, slot, msg):
     panel.fill((10, 10, 14, 232))
     pygame.draw.rect(panel, (96, 96, 118), panel.get_rect(), width=2, border_radius=10)
     surf.blit(panel, (x, y))
-    surf.blit(font.render("FIRE KEY CONFIG   (ESC / F4 close)", True, YELLOW),
+    surf.blit(font.render("FIRE KEY CONFIG   (ESC / F4 / X close)", True, YELLOW),
               (x + 16, y + 12))
 
     rows = [
         ("1", f"P1 fire : {names['p1'].upper()}"),
         ("2", f"P2 fire : {names['p2'].upper()}"),
         ("3", f"Pad fire: {pad_fire_label()}"),
-        ("0", "restore defaults (SPACE / ENTER / ABXY)"),
+        ("0", "restore defaults (SPACE / ENTER / A·B·Y)"),
     ]
     for i, (key, text) in enumerate(rows):
         color = WHITE if slot == "menu" else (198, 198, 210)
@@ -628,11 +628,11 @@ def draw_key_config(surf, font, small_font, names, slot, msg):
                   (x + 20, y + 46 + i * 24))
 
     if slot == "pad":
-        prompt = "Press the gamepad button to use for fire  (ESC cancel)"
+        prompt = "Press the gamepad button to use for fire  (ESC/X cancel)"
     elif slot in ("p1", "p2"):
         prompt = f"Press new {slot.upper()} fire key  (ESC cancel)"
     else:
-        prompt = "Pick 1/2/3 to rebind, 0 to reset, ESC to close"
+        prompt = "Pick 1/2/3 to rebind, 0 to reset, ESC/X to close"
     surf.blit(small_font.render(prompt, True, YELLOW), (x + 20, y + 162))
     if msg:
         surf.blit(small_font.render(msg[:70], True, (150, 220, 160)), (x + 20, y + 194))
@@ -2504,10 +2504,9 @@ def main():
         return False
 
     def poll_main_menu_pad():
-        """主菜单：摇杆/十字键移动；Start(+) 或 Y 确认；战绩层 Esc/Back/确认关闭。"""
+        """主菜单：摇杆/十字键移动；Start(+) 或 Y 确认；战绩层 Back/X 退出。"""
         if main_view == "career":
-            if any(pad.mode_edge() or pad.restart_edge()
-                   or pad.confirm_face_edge() for pad in pads):
+            if any(pad.mode_edge() or pad.pause_face_edge() for pad in pads):
                 close_career_view()
                 return True
             return False
@@ -2611,14 +2610,14 @@ def main():
         return 0
 
     def poll_post_menu_pad():
-        """胜负菜单：摇杆/十字键边沿移动；Start(+) 或 Y 确认；战报层仅 Back 返回。
+        """胜负菜单：摇杆/十字键边沿移动；Start(+) 或 Y 确认；战报层 Back/X 返回。
 
         不用 A/任意开火边沿确认：对局末尾最容易误触再来一局。Y 在 ABXY 里最靠上、
         与主开火 A 分开；macOS 上 + 读不到时用 Y。
         """
         nonlocal post_view
         if post_view == "report":
-            if any(pad.mode_edge() for pad in pads):
+            if any(pad.mode_edge() or pad.pause_face_edge() for pad in pads):
                 post_view = "menu"
                 return True
             return False
@@ -2900,8 +2899,18 @@ def main():
                 bind_pads()
                 print(f"[pad] 已断开，剩余 {len(pads)} 只")
             elif event.type in PAD_BUTTON_EVENTS and bind_state["slot"] == "pad":
-                # 配置面板的手柄槽位：按下哪个按钮就把它当开火键
-                apply_pad_fire(getattr(event, "button", None))
+                # 配置面板的手柄槽位：按下哪个按钮就把它当开火键；X = 取消关闭
+                btn = getattr(event, "button", None)
+                try:
+                    is_pause_x = int(btn) == int(PAD_PAUSE_FACE)
+                except (TypeError, ValueError):
+                    is_pause_x = False
+                if is_pause_x:
+                    bind_state["slot"] = None
+                    set_msg("")
+                    print("[keys] 手柄 X 取消并关闭攻击键配置")
+                else:
+                    apply_pad_fire(btn)
             elif (event.type == getattr(pygame, "CONTROLLERBUTTONDOWN", -1)
                   and bind_state["slot"] is None):
                 # MFI 上 get_button(START/BACK) 可能一直为假，事件里的语义号仍可用
@@ -3052,7 +3061,16 @@ def main():
         config_open = bind_state["slot"] is not None
 
         menu_ate_fire = False
-        if not config_open:
+        if config_open:
+            # F4 面板：手柄 X = 关闭（与 Esc 同义）；slot=pad 绑定时 X 不当开火键
+            if any(pad.pause_face_edge() for pad in pads):
+                bind_state["slot"] = None
+                set_msg("")
+                print("[keys] 手柄 X 关闭攻击键配置")
+                menu_ate_fire = True
+            else:
+                menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
+        elif not config_open:
             # 手柄：暂停菜单 / 主菜单 / 局末 / 对局中 X 暂停 / 专用键
             if paused_play:
                 if poll_pause_menu_pad():
@@ -3337,9 +3355,9 @@ def main():
                     max(90, (SCREEN_HEIGHT - h) // 2 - 20),
                     width=card_w)
                 tip = small_font.render(
-                    "Esc / Back / Enter / Y — return"
+                    "Esc / Enter / Y  |  pad X / Back — return"
                     if tank_coach.ASCII_ONLY else
-                    "Esc / Back / Enter / Y — 返回菜单",
+                    "Esc / Enter / Y  |  手柄 X / Back — 返回",
                     True, GRAY)
                 screen.blit(tip, tip.get_rect(
                     center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 48)))
@@ -3406,8 +3424,8 @@ def main():
                                 max(90, (SCREEN_HEIGHT - h) // 2 - 20),
                                 width=card_w)
                 tip = small_font.render(
-                    "Esc / Back — return to menu" if tank_coach.ASCII_ONLY
-                    else "Esc / Back(-) — 返回菜单", True, GRAY)
+                    "Esc / pad X / Back — return" if tank_coach.ASCII_ONLY
+                    else "Esc / 手柄 X / Back(-) — 返回菜单", True, GRAY)
                 screen.blit(tip, tip.get_rect(
                     center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 48)))
             else:
