@@ -323,7 +323,14 @@ PAD_DEADZONE = 0.25
 PAD_TRIGGER_ON = 0.5
 PAD_AXIS_SCALE = 32767.0   # Controller.get_axis() 返回 -32768..32767 的整数
 PAD_RUMBLE_MS = 180
+# 震动：auto=蓝牙 GUID(0500…) 默认关（BLE 震动易拖帧），USB 开；0=全关；1=全开
+_PAD_RUMBLE_ENV = (os.environ.get("TANK_PAD_RUMBLE") or "auto").strip().lower()
 PAD_DEBUG = os.environ.get("TANK_PAD_DEBUG") == "1"
+
+
+def pad_guid_is_bluetooth(guid):
+    """SDL GUID 前缀 0500 = 蓝牙 HID；0300 = USB。"""
+    return isinstance(guid, str) and guid.lower().startswith("0500")
 
 # --- 表现评估（coach）---
 # 只统计「人类 vs 电脑」那一局（1p 模式）；双人对战没有可比基准，不计数。
@@ -1281,8 +1288,10 @@ class Gamepad:
         self.controller = controller
         self.joystick = joystick
         self.instance_id = -1
+        self.guid = ""
         self.mapping = {}
         self.name = name or f"Gamepad {index}"
+        self.rumble_ok = True   # False：跳过震动（蓝牙默认 / TANK_PAD_RUMBLE=0）
         self.prev_fire = False
         self.prev_restart = False
         self.prev_mode = False
@@ -1308,6 +1317,35 @@ class Gamepad:
         # 原始模式（RawController）：扳机轴号不可靠，默认只认按钮
         self.raw = getattr(self.controller, "is_raw", False)
         self.trigger_axes = PAD_RAW_TRIGGER_AXES if self.raw else PAD_TRIGGER_AXES
+        self._apply_rumble_policy()
+
+    def _read_guid(self):
+        """从 joystick 读 SDL GUID；失败返回空串。"""
+        if self.joystick is None:
+            return ""
+        try:
+            return str(self.joystick.get_guid() or "")
+        except Exception:
+            return ""
+
+    def _apply_rumble_policy(self):
+        """按 TANK_PAD_RUMBLE 与 GUID 决定是否允许震动。"""
+        self.guid = self._read_guid() or self.guid
+        env = _PAD_RUMBLE_ENV
+        if env in ("0", "off", "false", "no"):
+            self.rumble_ok = False
+            reason = "TANK_PAD_RUMBLE=0"
+        elif env in ("1", "on", "true", "yes"):
+            self.rumble_ok = True
+            reason = None
+        elif pad_guid_is_bluetooth(self.guid):
+            self.rumble_ok = False
+            reason = "蓝牙 GUID(0500) 默认关震动，避免卡顿；强制开：TANK_PAD_RUMBLE=1"
+        else:
+            self.rumble_ok = True
+            reason = None
+        if reason and self.controller is not None:
+            print(f"[pad] #{self.index}「{self.name}」震动已关（{reason}）")
 
     # --- 打开 / 关闭 ---
     def _open(self, index):
@@ -1323,11 +1361,13 @@ class Gamepad:
                 try:  # instance_id 用于“事件 → 哪台坦克”的反查，蓝牙重连后会变
                     self.joystick = self.controller.as_joystick()
                     self.instance_id = self.joystick.get_instance_id()
+                    self.guid = self._read_guid()
                 except Exception:
                     self.joystick = None
                 if PAD_DEBUG:
                     print(f"[pad] #{index} 已打开：{self.name} "
-                          f"instance_id={self.instance_id} mapping_platform="
+                          f"instance_id={self.instance_id} guid={self.guid} "
+                          f"mapping_platform="
                           f"{self.mapping.get('platform', '?')}")
                 return
         self._open_raw(index)
@@ -1350,6 +1390,7 @@ class Gamepad:
             self.instance_id = js.get_instance_id()
         except Exception:
             self.instance_id = -1
+        self.guid = self._read_guid()
         print(f"[pad] #{index}「{self.name}」SDL 没有映射表 → 走原始 joystick 兜底"
               f"（左摇杆 axes {PAD_AXIS_X},{PAD_AXIS_Y}，开火按钮 "
               f"{list(PAD_FIRE_BUTTONS)}）；方向不对就用 TANK_PAD_AXES 换轴")
@@ -1541,8 +1582,8 @@ class Gamepad:
                 or self._confirm_face_edge or self._pause_face_edge)
 
     def rumble(self, ms=PAD_RUMBLE_MS, strength=0.8):
-        """震动；不支持的手柄（有线猎户座青春版等）静默失败。"""
-        if self.controller is None:
+        """震动；蓝牙默认跳过（易卡顿）；不支持的手柄静默失败。"""
+        if self.controller is None or not self.rumble_ok:
             return
         try:
             self.controller.rumble(strength, strength, ms)

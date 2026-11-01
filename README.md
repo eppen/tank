@@ -91,6 +91,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 - macOS 蓝牙要求 macOS 11+（Apple Silicon 建议 12+）；`--pad-scan` 里显示「标准映射」就说明系统层和 SDL 都认了。
 - `--pad-scan` / 启动绑手柄前会短暂泵事件：macOS 蓝牙手柄在 `set_mode` 当下 `get_count()` 常仍为 0，必须处理一轮 `JOYDEVICEADDED` / `CONTROLLERDEVICEADDED` 才现身；用 `SDL_VIDEODRIVER=dummy` 做 CI 诊断时本来就没有真设备，结果仍是 0。
 - Ultimate 3mode Xbox 官方更稳的 PC 路径仍是 **2.4G / USB**；macOS 蓝牙已实测可玩，但若 `--pad-scan` 仍为 0，先确认不是 dummy 驱动，再试接收器/数据线。
+- **蓝牙手感卡 / 掉帧**：命中震动走 BLE 时常拖主线程。默认对 GUID 前缀 `0500`（蓝牙）**关闭震动**；仍卡优先改用 **2.4G 接收器或 USB**。要强制开震动：`TANK_PAD_RUMBLE=1`；全关：`TANK_PAD_RUMBLE=0`。
 - 想确认手柄是不是原厂：Xbox 官方手柄的 GUID 形如 `030000005e04…`（USB）/ `050000005e04…`（蓝牙），`5e04` 就是微软 VID `045e` 的字节序。仿品/翻新常被改成别的 VID，正好落进兜底通道——能玩，但要调参。
 
 **两只不同型号能同时用吗**：能，两只手柄各走各的通道、各自算上升沿，互不干扰（同型号更是没问题）。要注意三点：
@@ -122,6 +123,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | `TANK_PAD_FIRE="..."` | 开火按钮号列表；标准通道下是语义号（0=A 1=B 2=X 3=Y 4=BACK 6=START 9=LB 10=RB 11–14=十字键 …） | `TANK_PAD_FIRE="9,10"` 只用肩键 |
 | `TANK_PAD_RAW_TRIGGERS="l,r"` | **仅兜底通道**：启用扳机轴开火 | `TANK_PAD_RAW_TRIGGERS="4,5"` |
 | `TANK_PAD_RAW=0` | 整体关闭兜底通道，只认 SDL 标准手柄 | `TANK_PAD_RAW=0 python3.11 tank_game.py` |
+| `TANK_PAD_RUMBLE` | 手柄震动：`auto`（默认，蓝牙 GUID`0500`关、USB开）/ `0`全关 / `1`全开 | `TANK_PAD_RUMBLE=0` |
 | `TANK_KEYS_FILE=...` | 开火键配置文件位置（默认脚本同目录 `tank_keys.json`） | `TANK_KEYS_FILE=/tmp/k.json` |
 | `TANK_MODE` / `TANK_AI` | 默认模式与 AI 难度；配合 `--1p`/`--2p` 会跳过主菜单 | `TANK_MODE=1p TANK_AI=easy` |
 | `TANK_SKIP_MENU=1` | 跳过主菜单，直接按当前模式开打（自测用） | `TANK_SKIP_MENU=1 python3.11 tank_game.py` |
