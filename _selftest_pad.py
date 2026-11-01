@@ -130,17 +130,16 @@ def pad_main_scenario():
     frame = {"i": 0}
     tanks_before_start = {"n": None}
     # 10 发击毁一次（DAMAGE=10），每 20 帧按一下 A：约 180 帧打完，200 帧左右分胜负
-    # 局末开火不确认菜单，仅 Start(+) 确认「再来一局」；胜负后继续按 A 也不该 rematch
+    # 局末 A 不确认；Start(+) 或 Y 确认。胜负后继续按 A，再用 Y 确认再来一局。
 
     def fake_get():
         i = frame["i"]
         frame["i"] += 1
-        won = bool(seen["stats"])
         # 开打期间脉冲 A；胜负后仍脉冲 A，断言不会因此 rematch
         fc1.buttons[pygame.CONTROLLER_BUTTON_A] = (i % 20) < 2
         if i == 259:
             tanks_before_start["n"] = seen["tanks"]
-        fc1.buttons[pygame.CONTROLLER_BUTTON_START] = i in (260, 261)
+        fc1.buttons[pygame.CONTROLLER_BUTTON_Y] = i in (260, 261)
         if i >= 340:
             return [pygame.event.Event(pygame.QUIT)]
         return []
@@ -159,9 +158,9 @@ def pad_main_scenario():
     assert set(seen["fire"]) == {g.RED}, "只有 P1 的手柄开火，不能串到 P2"
     assert seen["stats"], "局末应打印双方战损 [stats]"
     assert tanks_before_start["n"] == 2, \
-        f"胜负后按 A 不应 rematch，Start 前 tanks={tanks_before_start['n']}"
-    assert seen["tanks"] == 4, "初始 2 + Start 确认再来一局 2"
-    print("PAD_MAIN OK：手柄开火→击毁→战损菜单→A 不重开→Start 确认再来一局")
+        f"胜负后按 A 不应 rematch，Y 前 tanks={tanks_before_start['n']}"
+    assert seen["tanks"] == 4, "初始 2 + Y 确认再来一局 2"
+    print("PAD_MAIN OK：手柄开火→击毁→战损菜单→A 不重开→Y 确认再来一局")
 
 
 if "--pad-main" in sys.argv:
@@ -464,6 +463,15 @@ assert pad.map_edge(), "RB+Y 应切地图"
 assert pad.menu_consumed_fire(), "切地图和弦应占用开火"
 pad.poll()
 assert not pad.map_edge(), "按住 RB+Y 不应反复切地图"
+fc.buttons.clear()
+pad.poll()
+
+# 单独 Y：局末确认边沿（主循环仅 winner 时认；对局中 Y 仍开火）
+fc.buttons[ybtn] = True
+pad.poll()
+assert pad.confirm_face_edge(), "Y 应出 confirm_face 边沿"
+pad.poll()
+assert not pad.confirm_face_edge(), "按住 Y 不应反复确认"
 fc.buttons.clear()
 pad.poll()
 # 带 LB 时不应认成切地图（避免跟 LB+RB 模式和弦打架）

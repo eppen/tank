@@ -382,6 +382,8 @@ PAD_MENU_LB = pygame.CONTROLLER_BUTTON_LEFTSHOULDER
 PAD_MENU_RB = pygame.CONTROLLER_BUTTON_RIGHTSHOULDER
 PAD_MENU_DIFF_FACE = pygame.CONTROLLER_BUTTON_X   # LB 按住 + X = 切难度
 PAD_MENU_MAP_FACE = pygame.CONTROLLER_BUTTON_Y    # RB 按住 + Y = 切地图（仅等待开始）
+# 局末菜单确认：人脸键 Y（不用 A——主开火最易误触再来一局）；Start(+) 仍可用
+PAD_MENU_CONFIRM_FACE = pygame.CONTROLLER_BUTTON_Y
 
 # --- 非标准手柄兜底（原始 joystick 通道）---
 # SDL 只把「查得到映射表」的设备当成 GameController（XInput、Switch Pro、
@@ -1283,11 +1285,13 @@ class Gamepad:
         self.prev_mode = False
         self.prev_difficulty = False
         self.prev_map = False
+        self.prev_confirm_face = False
         self._fire_edge = False
         self._restart_edge = False
         self._mode_edge = False
         self._difficulty_edge = False
         self._map_edge = False
+        self._confirm_face_edge = False
         # CONTROLLERBUTTONDOWN 闩锁：部分 MFI 手柄 get_button(START/BACK) 一直
         # 为假，但事件能到；poll 时并入上升沿，用完清掉。
         self._latch_mode = False
@@ -1439,6 +1443,10 @@ class Gamepad:
                 and self._button((PAD_MENU_MAP_FACE,))
                 and not self._button((PAD_MENU_LB,)))
 
+    def confirm_face_held(self):
+        """人脸键 Y：局末菜单确认（主循环仅 winner 时认；对局中 Y 仍开火）。"""
+        return self._button((PAD_MENU_CONFIRM_FACE,))
+
     def latch_menu_button(self, button):
         """事件路径：把 CONTROLLERBUTTONDOWN 的语义按钮记成下一帧边沿。"""
         try:
@@ -1463,6 +1471,7 @@ class Gamepad:
         mode = self.mode_held()
         difficulty = self.difficulty_held()
         map_btn = self.map_held()
+        confirm_face = self.confirm_face_held()
         self._fire_edge = fire and not self.prev_fire
         self._restart_edge = ((restart and not self.prev_restart)
                               or self._latch_restart)
@@ -1470,10 +1479,12 @@ class Gamepad:
         self._difficulty_edge = ((difficulty and not self.prev_difficulty)
                                  or self._latch_difficulty)
         self._map_edge = map_btn and not self.prev_map
+        self._confirm_face_edge = confirm_face and not self.prev_confirm_face
         self._latch_mode = self._latch_difficulty = self._latch_restart = False
         self.prev_fire, self.prev_restart = fire, restart
         self.prev_mode, self.prev_difficulty = mode, difficulty
         self.prev_map = map_btn
+        self.prev_confirm_face = confirm_face
         return self
 
     def fire_edge(self):
@@ -1495,9 +1506,14 @@ class Gamepad:
         """切地图（须先 poll()；主循环仅在 awaiting_start 时响应）。"""
         return self._map_edge
 
+    def confirm_face_edge(self):
+        """局末菜单用 Y 确认（须先 poll()；主循环仅 winner 时响应）。"""
+        return self._confirm_face_edge
+
     def menu_consumed_fire(self):
         """本帧菜单和弦占用了肩键/面键，开火应让路，避免误开枪。"""
-        return self._mode_edge or self._difficulty_edge or self._map_edge
+        return (self._mode_edge or self._difficulty_edge or self._map_edge
+                or self._confirm_face_edge)
 
     def rumble(self, ms=PAD_RUMBLE_MS, strength=0.8):
         """震动；不支持的手柄（有线猎户座青春版等）静默失败。"""
@@ -2323,9 +2339,10 @@ def main():
         return 0
 
     def poll_post_menu_pad():
-        """胜负菜单：摇杆/十字键边沿移动，仅 Start(+) 确认；战报层仅 Back 返回。
+        """胜负菜单：摇杆/十字键边沿移动；Start(+) 或 Y 确认；战报层仅 Back 返回。
 
-        不用开火键确认/返回：对局末尾的开火边沿否则会立刻「再来一局」，看不到战损。
+        不用 A/任意开火边沿确认：对局末尾最容易误触再来一局。Y 在 ABXY 里最靠上、
+        与主开火 A 分开；macOS 上 + 读不到时用 Y。
         """
         nonlocal post_view
         if post_view == "report":
@@ -2338,7 +2355,7 @@ def main():
         if raw != 0 and raw != prev:
             post_menu_move(raw)
         post_nav["prev"] = raw
-        if any(pad.restart_edge() for pad in pads):
+        if any(pad.restart_edge() or pad.confirm_face_edge() for pad in pads):
             post_menu_confirm()
             return True
         return False
@@ -2945,9 +2962,9 @@ def main():
                         center=(SCREEN_WIDTH // 2,
                                 SCREEN_HEIGHT // 2 + 8 + i * 28)))
                 hint = small_font.render(
-                    "Up/Down  Enter/Space  Start(+)  1-5"
+                    "Up/Down  Enter/Space  Start(+)/Y  1-5"
                     if tank_coach.ASCII_ONLY else
-                    "上下选择  Enter/空格  Start(+)确认  数字键 1-5",
+                    "上下选择  Enter/空格  Start(+)/Y 确认  数字键 1-5",
                     True, GRAY)
                 screen.blit(hint, hint.get_rect(
                     center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 160)))
