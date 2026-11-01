@@ -7,8 +7,9 @@ import json
 import os
 import time
 
-CAREER_PATH = os.environ.get("TANK_CAREER_FILE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "tank_career.json")
+import tank_paths
+
+CAREER_PATH = tank_paths.data_file("tank_career.json", "TANK_CAREER_FILE")
 MAX_RECENT = 20
 # 屏幕文案：由 tank_game 同步 tank_coach.ASCII_ONLY
 ASCII_ONLY = False

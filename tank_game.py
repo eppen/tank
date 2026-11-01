@@ -9,6 +9,7 @@ import pygame
 
 import tank_career
 import tank_coach
+import tank_paths
 
 # --- 初始化设置 ---
 pygame.init()
@@ -41,7 +42,12 @@ pygame.display.set_caption("Top-Down Tank Game")
 # 看名字而是**真的渲染两个字比较像素**：能区分开才算有汉字字形（.ttc 的第一张
 # 字面常常只有拉丁字母，光看名字会踩空）。都找不到就退回英文界面
 # （tank_coach.ASCII_ONLY = True），宁可全英文也不再画方块。
+# 打包目录 fonts/ 优先（MSIX / PyInstaller 可附带可商用 CJK 字体）
+_BUNDLE_FONT_DIR = os.path.join(tank_paths.bundle_dir(), "fonts")
 FONT_FILE_CANDIDATES = (
+    os.path.join(_BUNDLE_FONT_DIR, "NotoSansSC-Regular.otf"),
+    os.path.join(_BUNDLE_FONT_DIR, "NotoSansCJK-Regular.ttc"),
+    os.path.join(_BUNDLE_FONT_DIR, "SourceHanSansSC-Regular.otf"),
     # macOS
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -415,8 +421,7 @@ PAD_RAW_TRIGGER_AXES = _env_int_tuple("TANK_PAD_RAW_TRIGGERS", ())
 # 手柄的 RT/LT 模拟扳机始终算开火（安全兜底），不受本配置影响。
 FIRE_KEY_DEFAULTS = {"p1": "space", "p2": "return"}
 FIRE_SLOTS = ("p1", "p2")
-KEYS_CONFIG_PATH = os.environ.get("TANK_KEYS_FILE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "tank_keys.json")
+KEYS_CONFIG_PATH = tank_paths.data_file("tank_keys.json", "TANK_KEYS_FILE")
 # ESC/P 暂停、F2/F3 切模式与难度、F4 开配置、F5 评估、M 切地图，都不允许被抢作开火键
 RESERVED_KEY_NAMES = frozenset(
     {"escape", "esc", "p", "f1", "f2", "f3", "f4", "f5", "m"})
@@ -2181,6 +2186,9 @@ def main():
               f"（TANK_COACH=0 关闭）")
     else:
         print("[coach] 评估已关闭（TANK_COACH=0）")
+    print(f"[data] 可写目录 {tank_paths.data_dir()}"
+          f"（{'打包态 LocalAppData' if tank_paths.frozen() else '开发态脚本旁'}；"
+          f"TANK_DATA_DIR 可覆盖）")
     print(f"[career] 生涯战绩写入 {os.path.basename(tank_career.CAREER_PATH)}"
           f"（主菜单「战绩」查看；TANK_CAREER_FILE 可改路径）")
     if OBSTACLE_ENABLED:

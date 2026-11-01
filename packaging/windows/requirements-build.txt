@@ -1,0 +1,3 @@
+# Windows 打包用（在 Windows 上 pip install -r 本文件）
+pygame>=2.5,<3
+pyinstaller>=6.0,<7

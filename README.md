@@ -1,6 +1,6 @@
 # 坦克大战（tank_game）
 
-文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
+文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
 
 **下文所有命令都在本目录（`tank/`）下执行**，例如 `cd tank && python3.11 tank_game.py`。
 
@@ -124,13 +124,16 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | `TANK_PAD_RAW_TRIGGERS="l,r"` | **仅兜底通道**：启用扳机轴开火 | `TANK_PAD_RAW_TRIGGERS="4,5"` |
 | `TANK_PAD_RAW=0` | 整体关闭兜底通道，只认 SDL 标准手柄 | `TANK_PAD_RAW=0 python3.11 tank_game.py` |
 | `TANK_PAD_RUMBLE` | 手柄震动：`auto`（默认，蓝牙 GUID`0500`关、USB开）/ `0`全关 / `1`全开 | `TANK_PAD_RUMBLE=0` |
-| `TANK_KEYS_FILE=...` | 开火键配置文件位置（默认脚本同目录 `tank_keys.json`） | `TANK_KEYS_FILE=/tmp/k.json` |
+| `TANK_KEYS_FILE=...` | 开火键配置文件位置（默认见下「数据目录」） | `TANK_KEYS_FILE=/tmp/k.json` |
+| `TANK_DATA_DIR=...` | 覆盖整个可写数据根（keys/coach/career） | `TANK_DATA_DIR=/tmp/tankdata` |
 | `TANK_MODE` / `TANK_AI` | 默认模式与 AI 难度；配合 `--1p`/`--2p` 会跳过主菜单 | `TANK_MODE=1p TANK_AI=easy` |
 | `TANK_SKIP_MENU=1` | 跳过主菜单，直接按当前模式开打（自测用） | `TANK_SKIP_MENU=1 python3.11 tank_game.py` |
 | `TANK_COACH=0` | 关闭 1p 模式下的表现评估（不统计、不写历史） | `TANK_COACH=0 python3.11 tank_game.py --1p` |
-| `TANK_COACH_FILE=...` | 评估历史文件位置（默认脚本同目录 `tank_coach.json`） | `TANK_COACH_FILE=/tmp/c.json` |
-| `TANK_CAREER_FILE=...` | 生涯战绩文件位置（默认脚本同目录 `tank_career.json`） | `TANK_CAREER_FILE=/tmp/career.json` |
+| `TANK_COACH_FILE=...` | 评估历史文件位置（默认见「数据目录」） | `TANK_COACH_FILE=/tmp/c.json` |
+| `TANK_CAREER_FILE=...` | 生涯战绩文件位置（默认见「数据目录」） | `TANK_CAREER_FILE=/tmp/career.json` |
 | `TANK_WALLS=0` | 关掉场地里的 4 个掩体方块（排查「是不是墙导致的」问题时用） | `TANK_WALLS=0 python3.11 tank_game.py` |
+
+**数据目录**：开发态默认写在脚本同目录；PyInstaller / MSIX 打包后写 `%LOCALAPPDATA%\TankGame\`（安装目录只读）。单文件环境变量仍可覆盖。自测：`python3.11 _selftest_paths.py`。
 
 两条固定参数（写在 `tank_game.py` 里，不开放环境变量）：摇杆死区 `PAD_DEADZONE = 0.25`（死区外线性过渡，不是非黑即白），扳机过 `PAD_TRIGGER_ON = 0.5`（行程一半）即算开火，脉冲扳机的两段手感不影响这个判定。
 
@@ -327,3 +330,14 @@ python3.11 tank_game.py --1p --ai=normal   # 或 --ai=easy / --ai=hard，游戏�
 - **点按不冤枉成「按住」**：连续按住从第 2 帧起才计数；**等对方无敌不算「空转」**：对方无敌期间的待机不计入冷却空转。这两条是仿真里抓到误报后专门修的，`_selftest_coach.py` 有回归。
 - **被掩体挡下的子弹算 miss**：评估只认「有没有打到坦克」，隔墙打出去（或擦着方块被打掉）的子弹不计命中，所以对着掩体乱打的局准度分会偏低——这跟「废弹」口径是一致的。
 - 评估不评判「没开火但走位好」这类无法量化的事，也不给操作手感打分。
+
+## Microsoft Store / Windows 打包
+
+可以上架 Microsoft Store，但不能直接提交 `.py`。路径：
+
+1. Windows 上跑 `packaging/windows/build.ps1` → `dist\TankGame\TankGame.exe`
+2. `smoke_test.ps1` 确认存档进 `%LOCALAPPDATA%\TankGame\`
+3. `build_msix.ps1` 打 MSIX（需 Windows SDK）
+4. Partner Center 提交（步骤与清单见 [`packaging/windows/STORE.md`](packaging/windows/STORE.md)）
+
+无 Windows 时可跑 `./packaging/windows/build_mac_smoke.sh` 验证冻结态数据目录逻辑。

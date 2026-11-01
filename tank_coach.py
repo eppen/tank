@@ -23,6 +23,8 @@ import math
 import os
 import unicodedata
 
+import tank_paths
+
 # 屏幕文案语言开关：True = 只用 ASCII。系统里找不到带中文字形的字体时，
 # tank_game 会把它置位——pygame 的默认字体（freesansbold）没有汉字，
 # 中文会被画成一串一模一样的方块，看起来就是乱码。终端报告不受影响。
@@ -55,8 +57,7 @@ BENCH_ENEMY_ACC = 0.35       # 电脑命中率低于 35% 不扣生存分
 
 GRADE_STEPS = ((85, "S"), (75, "A"), (60, "B"), (45, "C"), (0, "D"))
 
-COACH_HISTORY_PATH = os.environ.get("TANK_COACH_FILE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "tank_coach.json")
+COACH_HISTORY_PATH = tank_paths.data_file("tank_coach.json", "TANK_COACH_FILE")
 MAX_HISTORY = 20
 
 
