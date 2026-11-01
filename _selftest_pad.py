@@ -130,13 +130,16 @@ def pad_main_scenario():
     frame = {"i": 0}
     tanks_before_start = {"n": None}
     # 10 发击毁一次（DAMAGE=10），每 20 帧按一下 A：约 180 帧打完，200 帧左右分胜负
+    # 局末 A/Start 都会确认菜单默认项「再来一局」→ 胜负后停 A，只用 Start 重开
 
     def fake_get():
         i = frame["i"]
         frame["i"] += 1
-        # 每 20 帧按一下 A（上升沿）→ 冷却刚好够再开火
-        fc1.buttons[pygame.CONTROLLER_BUTTON_A] = (i % 20) < 2
-        # 胜负后继续按 A 若干帧：不应 rematch；259 记下坦克数，260 Start 才重开
+        won = bool(seen["stats"])
+        if not won and (i % 20) < 2:
+            fc1.buttons[pygame.CONTROLLER_BUTTON_A] = True
+        else:
+            fc1.buttons[pygame.CONTROLLER_BUTTON_A] = False
         if i == 259:
             tanks_before_start["n"] = seen["tanks"]
         fc1.buttons[pygame.CONTROLLER_BUTTON_START] = i in (260, 261)
@@ -158,9 +161,9 @@ def pad_main_scenario():
     assert set(seen["fire"]) == {g.RED}, "只有 P1 的手柄开火，不能串到 P2"
     assert seen["stats"], "局末应打印双方战损 [stats]"
     assert tanks_before_start["n"] == 2, \
-        f"胜负后按 A 不应 rematch，Start 前 tanks={tanks_before_start['n']}"
-    assert seen["tanks"] == 4, "初始 2 + 按 Start 重开 2"
-    print("PAD_MAIN OK：手柄开火→击毁→战损→A 不重开→Start 重开")
+        f"Start 确认前不应 rematch，tanks={tanks_before_start['n']}"
+    assert seen["tanks"] == 4, "初始 2 + 菜单确认再来一局 2"
+    print("PAD_MAIN OK：手柄开火→击毁→战损菜单→Start 确认再来一局")
 
 
 if "--pad-main" in sys.argv:

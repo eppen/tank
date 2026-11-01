@@ -138,12 +138,11 @@ def recording_load_font(size, bold=False):
 
 g.load_font = recording_load_font
 
-# P1 每 20 帧打一枪：10 发击毁一次（DAMAGE=10），两轮共 20 发；
-# 最后两枪是「回合已结束」的探针，应该被完全忽略。
+# P1 每 20 帧打一枪：10 发击毁一次（DAMAGE=10），两轮共 20 发。
+# 胜负后 SPACE 会确认局末菜单「再来一局」，故不再发探针开火键。
 SHOT_FRAMES = (2, 22, 42, 62, 82, 102, 122, 142, 162, 182,        # 第 1 条命
-               232, 252, 272, 292, 312, 332, 352, 372, 392, 412,  # 第 2 条命
-               450, 470)                                          # 探针
-QUIT_FRAME = 560
+               232, 252, 272, 292, 312, 332, 352, 372, 392, 412)  # 第 2 条命
+QUIT_FRAME = 500
 frame = {"i": 0}
 
 
@@ -194,15 +193,20 @@ assert wins, "命扣完后应显示胜负提示"
 assert wins[-1] == "P1 (red) wins!", wins
 win_frame = min(f for f, t in texts if "wins!" in t)
 
-# 局末双方战损文案（击毁/被毁/命中）；探针 SPACE 不应 rematch（键盘本就不认开火重开）
+# 局末双方战损 + 操作菜单；探针 SPACE 确认默认「再来一局」可能 rematch——
+# 本测试 QUIT 前的 SPACE 在胜负后：若已 rematch 会清 winner，这里只断言战损与菜单文案曾出现
 casualty = [t for f, t in texts if f >= win_frame
             and (("击毁" in t and "被毁" in t)
                  or ("HIT" in t and "LIVES" in t))]
 assert len(casualty) >= 2, f"应显示双方战损：{casualty}"
 assert any(t.startswith("P1") for t in casualty), casualty
 assert any(t.startswith("P2") for t in casualty), casualty
-assert any("rematch" in t.lower() for f, t in texts if f >= win_frame), \
-    "胜负后应提示 R/Start rematch"
+menu_bits = [t for f, t in texts if f >= win_frame]
+assert any("再来一局" in t or "Rematch" in t for t in menu_bits), menu_bits
+assert any("Battle Report" in t or "战报" in t for t in menu_bits), menu_bits
+# 2p 无 coach：不应自动画出 BATTLE REPORT 卡片标题当战报内容
+# （菜单项里的 “Battle Report” 文案不算）
+assert not any(t == "BATTLE REPORT" for t in menu_bits), menu_bits
 
 # 回合结束后（探针两枪）不再有任何开火
 late = [f for f, _ in fires if f > win_frame]
@@ -229,7 +233,7 @@ for n in range(g.MAX_LIVES + 1):
     g.draw_lives(surf, probe, 10, 10)
 assert g.lives_pips_width() > 0
 
-print("LIVES OK：2 条命 -> 掉命复活 -> 命尽分胜负 + 双方战损 -> 停火")
+print("LIVES OK：2 条命 -> 掉命复活 -> 命尽分胜负 + 局末菜单 -> 停火")
 
 
 # ------------------------------------------------- 额外场景：真实复活点
@@ -274,3 +278,107 @@ assert any(pos.distance_to(c) < 1e-6 for c in corners), far
 assert abs(pos.distance_to(opp) - max(c.distance_to(opp) for c in corners)) < 1e-6, far
 assert far["pos"] != (200, 200), "不该回到固定出生角"
 print("FAR_OK：掉命后在离对手最远的角复活", far["pos"])
+
+
+# ------------------------------------------------- 1p：菜单打开战报（放最后，避免改 MAX_LIVES）
+def post_menu_report_scenario():
+    """1p 命尽后按 2 进入战报叠加层；战报不自动挂左下。"""
+    import builtins
+    g.MAX_LIVES = 1
+    g.RESPAWN_DELAY = 10
+    g.SPAWN_INVULN = 6
+    g.safe_respawn_point = fixed_respawn
+    seen = {"stats": False, "coach_report": False}
+
+    orig_print = builtins.print
+
+    def capturing_print(*args, **kwargs):
+        line = " ".join(str(a) for a in args)
+        if "[stats]" in line:
+            seen["stats"] = True
+        if "本局评估" in line or "ROUND REPORT" in line:
+            seen["coach_report"] = True
+        return orig_print(*args, **kwargs)
+
+    builtins.print = capturing_print
+    os.environ["TANK_MODE"] = "1p"
+    os.environ["TANK_AI"] = "easy"
+    texts_pm = []
+    real_load = g.load_font
+    fonts = {}
+
+    class Rec:
+        def __init__(self, f):
+            self._f = f
+
+        def render(self, text, *a, **kw):
+            texts_pm.append((frame_pm["i"], text))
+            return self._f.render(text, *a, **kw)
+
+        def __getattr__(self, n):
+            return getattr(self._f, n)
+
+    def load_rec(size, bold=False):
+        f = real_load(size, bold)
+        fonts[id(f)] = fonts.get(id(f)) or Rec(f)
+        return fonts[id(f)]
+
+    g.load_font = load_rec
+    frame_pm = {"i": 0}
+    shot = (2, 22, 42, 62, 82, 102, 122, 142, 162, 182)
+
+    def fake_get():
+        i = frame_pm["i"]
+        frame_pm["i"] += 1
+        evts = []
+        if i in shot:
+            evts.append(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
+        if seen["stats"] and i == frame_pm.get("open_at", -1):
+            evts.append(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_2))
+        if seen["stats"] and "open_at" not in frame_pm:
+            frame_pm["open_at"] = i + 5
+        if i >= 400:
+            evts.append(pygame.event.Event(pygame.QUIT))
+        return evts
+
+    oi = g.Tank.__init__
+
+    def close_init(self, x, y, color, controls, **kw):
+        oi(self, x, y, color, controls, **kw)
+        if color == g.RED:
+            self.pos.update(200, 300)
+            self.angle = 0
+        else:
+            self.pos.update(200, 200)
+            self.angle = 180
+        self.spawn_point = pygame.Vector2(self.pos)
+        self.spawn_angle = self.angle
+        self.respawn_point = pygame.Vector2(self.pos)
+        self.respawn_angle = self.angle
+
+    g.Tank.__init__ = close_init
+    pygame.event.get = fake_get
+    try:
+        try:
+            pygame.init()
+            g.screen = pygame.display.set_mode((g.SCREEN_WIDTH, g.SCREEN_HEIGHT))
+            g.main()
+        except SystemExit:
+            pass
+    finally:
+        builtins.print = orig_print
+        g.Tank.__init__ = oi
+        g.load_font = real_load
+        os.environ.pop("TANK_MODE", None)
+        os.environ.pop("TANK_AI", None)
+
+    assert seen["stats"], "应有战损"
+    assert seen["coach_report"], "1p 终端应有评估报告"
+    after_open = [t for f, t in texts_pm
+                  if f >= frame_pm.get("open_at", 0)
+                  and ("return to menu" in t.lower() or "返回菜单" in t)]
+    assert after_open, f"按 2 后应进入战报层：{texts_pm[-20:]}"
+    print("POST_MENU_REPORT OK：1p 菜单打开战报，不自动挂左下")
+
+
+post_menu_report_scenario()

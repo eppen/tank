@@ -1938,6 +1938,34 @@ def format_casualty_lines(stats_by_side, lives_by_side, labels_by_side,
     return lines
 
 
+# 局末操作菜单（胜负后）；索引与数字键 1–5 对齐
+POST_MENU_REMATCH = 0
+POST_MENU_REPORT = 1
+POST_MENU_MODE = 2
+POST_MENU_DIFF = 3
+POST_MENU_QUIT = 4
+POST_MENU_COUNT = 5
+
+
+def post_menu_item_labels(ascii_only=False):
+    """局末菜单五项文案（含序号）。"""
+    if ascii_only:
+        return (
+            "1  Rematch",
+            "2  Battle Report",
+            "3  Switch 1P/2P",
+            "4  AI Difficulty",
+            "5  Quit",
+        )
+    return (
+        "1  再来一局",
+        "2  战报 Battle Report",
+        "3  切换 1P/2P",
+        "4  切换 AI 难度",
+        "5  退出",
+    )
+
+
 def _parse_mode():
     """决定开局模式与 AI 难度。
 
@@ -2149,6 +2177,10 @@ def main():
     casualty_lines = []
     toast = {"text": "", "frames": 0}
     coach_panel = False      # F5：实时评估面板
+    # 局末菜单：index 0..4；view "menu" | "report"；nav 用于摇杆/十字键边沿
+    post_menu_index = 0
+    post_view = "menu"
+    post_nav = {"prev": 0}
 
     tank1, tank2 = reset()
     wait_for_joysticks()   # macOS 蓝牙/MFI：set_mode 后需泵事件才枚举得到
@@ -2178,6 +2210,13 @@ def main():
                 coach.on_enemy_shot()
         return True
 
+    def reset_post_menu():
+        """胜负刚出现时：菜单回到「再来一局」，关掉报告层。"""
+        nonlocal post_menu_index, post_view
+        post_menu_index = POST_MENU_REMATCH
+        post_view = "menu"
+        post_nav["prev"] = 0
+
     def capture_casualties():
         """胜负时生成双方战损文案（屏幕 + 终端）。"""
         if mode == "1p":
@@ -2196,6 +2235,7 @@ def main():
     def finish_round(won=None):
         """一局结束：终端打详细评估 → 写历史 → 缓存屏幕报告。"""
         capture_casualties()
+        reset_post_menu()
         if coach is None:
             return []
         try:
@@ -2210,6 +2250,99 @@ def main():
                   f"（共 {len(coach_hist.get('rounds', []))} 局）")
         report_cache[:] = coach.report_lines(coach_hist, compact=True)
         return report_cache
+
+    def post_item_enabled(index):
+        """局末菜单项是否可选。"""
+        if index == POST_MENU_REPORT:
+            return bool(report_cache)
+        if index == POST_MENU_DIFF:
+            return mode == "1p"
+        return True
+
+    def post_menu_move(delta):
+        """上下移动高亮；跳过没有意义的跳转不需要，固定 5 项都可停。"""
+        nonlocal post_menu_index
+        if post_view != "menu":
+            return
+        post_menu_index = (post_menu_index + delta) % POST_MENU_COUNT
+
+    def post_menu_confirm(index=None):
+        """确认当前（或指定）菜单项；灰显则 toast 原因。"""
+        nonlocal post_view, running
+        if index is None:
+            index = post_menu_index
+        index = int(index) % POST_MENU_COUNT
+        if not post_item_enabled(index):
+            if index == POST_MENU_REPORT:
+                set_toast("No report (2P / coach off)"
+                          if tank_coach.ASCII_ONLY else
+                          "无战报（双人或评估关闭）")
+            elif index == POST_MENU_DIFF:
+                set_toast("AI difficulty: 1P only"
+                          if tank_coach.ASCII_ONLY else
+                          "切难度仅单人模式可用")
+            return False
+        if index == POST_MENU_REMATCH:
+            rematch()
+            return True
+        if index == POST_MENU_REPORT:
+            post_view = "report"
+            return True
+        if index == POST_MENU_MODE:
+            toggle_mode()
+            return True
+        if index == POST_MENU_DIFF:
+            cycle_difficulty()
+            return True
+        if index == POST_MENU_QUIT:
+            running = False
+            return True
+        return False
+
+    def post_nav_raw_dir():
+        """手柄当前「菜单上下」意图：-1 上 / 0 无 / +1 下。"""
+        dpad_up = getattr(pygame, "CONTROLLER_BUTTON_DPAD_UP", None)
+        dpad_down = getattr(pygame, "CONTROLLER_BUTTON_DPAD_DOWN", None)
+        for pad in pads:
+            if dpad_up is not None and pad._button((dpad_up,)):
+                return -1
+            if dpad_down is not None and pad._button((dpad_down,)):
+                return 1
+            hat = pad._hat()
+            if hat is not None:
+                if hat[1] > 0:
+                    return -1
+                if hat[1] < 0:
+                    return 1
+            # move()>0 = 摇杆上推（前进）；菜单上移
+            my = pad.move()
+            if my > 0.55:
+                return -1
+            if my < -0.55:
+                return 1
+        return 0
+
+    def poll_post_menu_pad():
+        """胜负菜单：摇杆/十字键边沿移动，A/开火边沿或 Start 确认；B/Back 退出报告。"""
+        nonlocal post_view
+        if post_view == "report":
+            if any(pad.mode_edge() for pad in pads):
+                post_view = "menu"
+                return True
+            # B 也算开火键之一：用 fire_edge 当「返回」在报告层
+            if any(pad.fire_edge() or pad.restart_edge() for pad in pads):
+                post_view = "menu"
+                return True
+            return False
+        raw = post_nav_raw_dir()
+        prev = post_nav["prev"]
+        if raw != 0 and raw != prev:
+            post_menu_move(raw)
+        post_nav["prev"] = raw
+        if any(pad.restart_edge() or pad.fire_edge() for pad in pads):
+            post_menu_confirm()
+            return True
+        return False
 
     def tank_label(tank):
         """日志用的人话标签（1p 模式下蓝车是电脑）。"""
@@ -2445,6 +2578,34 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if bind_state["slot"] is not None:
                     handle_config_key(event.key, bind_state["slot"])
+                elif winner is not None:
+                    # 局末菜单：Esc 报告层返回 / 菜单层退出；F2/F3/R 不再旁路
+                    if post_view == "report":
+                        if event.key in (pygame.K_ESCAPE, pygame.K_b,
+                                         pygame.K_BACKSPACE):
+                            post_view = "menu"
+                    elif event.key == pygame.K_ESCAPE:
+                        post_menu_confirm(POST_MENU_QUIT)
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        post_menu_move(-1)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        post_menu_move(1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER,
+                                       pygame.K_SPACE):
+                        post_menu_confirm()
+                    elif event.key in (pygame.K_1, pygame.K_KP1):
+                        post_menu_confirm(0)
+                    elif event.key in (pygame.K_2, pygame.K_KP2):
+                        post_menu_confirm(1)
+                    elif event.key in (pygame.K_3, pygame.K_KP3):
+                        post_menu_confirm(2)
+                    elif event.key in (pygame.K_4, pygame.K_KP4):
+                        post_menu_confirm(3)
+                    elif event.key in (pygame.K_5, pygame.K_KP5):
+                        post_menu_confirm(4)
+                    elif event.key == pygame.K_F4:
+                        bind_state["slot"] = "menu"
+                        set_msg("Pick 1/2/3 to rebind, 0 to reset, ESC to close")
                 elif event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_F4:
@@ -2458,7 +2619,7 @@ def main():
                 elif event.key == pygame.K_F3:
                     cycle_difficulty()
                 elif event.key == pygame.K_F5:
-                    # F5：实时评估面板（局末报告不受它影响，总会显示）
+                    # F5：对局中实时评估面板（局末战报改走菜单）
                     coach_panel = not coach_panel
                     if coach is None:
                         print("[coach] 双人模式没有评估基准，切到 1p（F2）才有")
@@ -2477,9 +2638,6 @@ def main():
                             if event.key == tank.controls["fire"]:
                                 confirm_start()
                                 break
-                elif winner is not None:
-                    if event.key == pygame.K_r:
-                        rematch()
                 else:
                     for tank in (tank1, tank2):
                         if tank.ai is not None or not tank.controls:
@@ -2495,9 +2653,11 @@ def main():
 
         menu_ate_fire = False
         if not paused:
-            # 手柄菜单：专用键 / 事件闩锁 / LB+RB·LB+X 和弦；
-            # 等待开始：START 或开火确认；胜负后仅 Start(+)/R 重开（开火留给读战损）
-            if any(pad.mode_edge() for pad in pads):
+            # 手柄：胜负走局末菜单；否则专用键 / 和弦；等待开始用 Start/开火确认
+            if winner is not None:
+                if poll_post_menu_pad():
+                    menu_ate_fire = True
+            elif any(pad.mode_edge() for pad in pads):
                 toggle_mode()
                 menu_ate_fire = True
             elif any(pad.difficulty_edge() for pad in pads):
@@ -2509,9 +2669,6 @@ def main():
             elif awaiting_start and any(
                     pad.restart_edge() or pad.fire_edge() for pad in pads):
                 confirm_start()
-                menu_ate_fire = True
-            elif winner is not None and any(pad.restart_edge() for pad in pads):
-                rematch()
                 menu_ate_fire = True
             if not menu_ate_fire:
                 menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
@@ -2632,6 +2789,7 @@ def main():
                                     print(f"[life] {tank_label(tank)} 命已用尽，"
                                           f"本局结束")
                                     capture_casualties()
+                                    reset_post_menu()
                             break
 
                 shake = max(0.0, shake - 0.9)
@@ -2745,32 +2903,60 @@ def main():
             screen.blit(map_line, map_line.get_rect(
                 center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40)))
         elif winner:
-            text = big_font.render(winner, True, WHITE)
-            screen.blit(text, text.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 52)))
-            for i, line in enumerate(casualty_lines):
-                row = font.render(line, True,
-                                  (200, 120, 120) if i == 0 else (120, 150, 220))
-                screen.blit(row, row.get_rect(
-                    center=(SCREEN_WIDTH // 2,
-                            SCREEN_HEIGHT // 2 - 8 + i * 28)))
-            sub = font.render(
-                "R / Start(+) rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
-                "F4 fire  F5 coach  ESC quit", True, GRAY)
-            screen.blit(sub, sub.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 62)))
-
-        # 表现评估：局末报告卡（左下，避开中央的胜负提示） / F5 实时面板
-        if coach is not None:
-            if winner is not None and report_cache:
+            if post_view == "report" and report_cache:
+                title = big_font.render(
+                    "BATTLE REPORT" if tank_coach.ASCII_ONLY else "战报",
+                    True, WHITE)
+                screen.blit(title, title.get_rect(
+                    center=(SCREEN_WIDTH // 2, 56)))
                 h = 32 + 18 * len(report_cache)
+                card_w = min(520, SCREEN_WIDTH - 40)
                 draw_coach_card(screen, font, small_font, "BATTLE REPORT",
-                                report_cache, 12, max(70, SCREEN_HEIGHT - 34 - h),
-                                width=404)
-            elif coach_panel and winner is None:
-                draw_coach_card(screen, font, small_font,
-                                f"COACH (F5) - {coach.skill_label}",
-                                coach.hud_lines(), 12, 76, width=300)
+                                report_cache,
+                                (SCREEN_WIDTH - card_w) // 2,
+                                max(90, (SCREEN_HEIGHT - h) // 2 - 20),
+                                width=card_w)
+                tip = small_font.render(
+                    "Esc / B / Back — return to menu" if tank_coach.ASCII_ONLY
+                    else "Esc / B / Back — 返回菜单", True, GRAY)
+                screen.blit(tip, tip.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 48)))
+            else:
+                text = big_font.render(winner, True, WHITE)
+                screen.blit(text, text.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 118)))
+                for i, line in enumerate(casualty_lines):
+                    row = font.render(
+                        line, True,
+                        (200, 120, 120) if i == 0 else (120, 150, 220))
+                    screen.blit(row, row.get_rect(
+                        center=(SCREEN_WIDTH // 2,
+                                SCREEN_HEIGHT // 2 - 72 + i * 26)))
+                labels = post_menu_item_labels(tank_coach.ASCII_ONLY)
+                for i, label in enumerate(labels):
+                    enabled = post_item_enabled(i)
+                    if i == post_menu_index:
+                        color = YELLOW if enabled else (140, 120, 60)
+                        prefix = "> "
+                    else:
+                        color = WHITE if enabled else (90, 90, 100)
+                        prefix = "  "
+                    row = font.render(prefix + label, True, color)
+                    screen.blit(row, row.get_rect(
+                        center=(SCREEN_WIDTH // 2,
+                                SCREEN_HEIGHT // 2 + 8 + i * 28)))
+                hint = small_font.render(
+                    "Up/Down  Enter/A/Start  1-5" if tank_coach.ASCII_ONLY
+                    else "上下选择  Enter/A/Start 确认  数字键 1-5",
+                    True, GRAY)
+                screen.blit(hint, hint.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 160)))
+
+        # 表现评估：仅对局中 F5 实时面板（局末战报改走菜单，不自动挂左下）
+        if coach is not None and coach_panel and winner is None:
+            draw_coach_card(screen, font, small_font,
+                            f"COACH (F5) - {coach.skill_label}",
+                            coach.hud_lines(), 12, 76, width=300)
 
         # 即时纠正提示（新触发的误用只在屏幕上挂 2.5 秒，不打断对局）
         if toast["frames"] > 0 and toast["text"]:
