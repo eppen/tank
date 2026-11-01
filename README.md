@@ -1,10 +1,12 @@
 # 坦克大战（tank_game）
 
-文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_preview.png`（预览截图）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
+文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
 
 **下文所有命令都在本目录（`tank/`）下执行**，例如 `cd tank && python3.11 tank_game.py`。
 
-启动默认进入**主菜单**：单人 / 双人 / AI 难度 / 地图 / 改开火键 / 退出。选模式后进入等待开始，再确认开打。局末「回主菜单」返回此处（不关游戏）。脚本自测可用 `TANK_SKIP_MENU=1` 或 `--1p`/`--2p` 跳过主菜单。
+启动默认进入**主菜单**：单人 / 双人 / AI 难度 / 地图 / **战绩** / 改开火键 / 退出。选模式后进入等待开始，再确认开打。局末「回主菜单」返回此处（不关游戏）。脚本自测可用 `TANK_SKIP_MENU=1` 或 `--1p`/`--2p` 跳过主菜单。
+
+每局结束会按 **P1（红/你）** 视角记一笔生涯战绩：1P 与 2P **分开**累计胜/负/击毁/被毁，并保留最近 **20** 局。主菜单选「战绩」打开只读面板（汇总 + 最近对局）；Esc / Back / Enter / Y 返回。不按 coach 分数排行；重置可删 `tank_career.json`。
 
 ## 生命值（每人 5 条命）
 
@@ -125,6 +127,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | `TANK_SKIP_MENU=1` | 跳过主菜单，直接按当前模式开打（自测用） | `TANK_SKIP_MENU=1 python3.11 tank_game.py` |
 | `TANK_COACH=0` | 关闭 1p 模式下的表现评估（不统计、不写历史） | `TANK_COACH=0 python3.11 tank_game.py --1p` |
 | `TANK_COACH_FILE=...` | 评估历史文件位置（默认脚本同目录 `tank_coach.json`） | `TANK_COACH_FILE=/tmp/c.json` |
+| `TANK_CAREER_FILE=...` | 生涯战绩文件位置（默认脚本同目录 `tank_career.json`） | `TANK_CAREER_FILE=/tmp/career.json` |
 | `TANK_WALLS=0` | 关掉场地里的 4 个掩体方块（排查「是不是墙导致的」问题时用） | `TANK_WALLS=0 python3.11 tank_game.py` |
 
 两条固定参数（写在 `tank_game.py` 里，不开放环境变量）：摇杆死区 `PAD_DEADZONE = 0.25`（死区外线性过渡，不是非黑即白），扳机过 `PAD_TRIGGER_ON = 0.5`（行程一半）即算开火，脉冲扳机的两段手感不影响这个判定。
@@ -137,14 +140,16 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | --- | --- | --- | --- |
 | 转向 | 左摇杆左右（十字键被 SDL 报成 hat 的型号也可用） | A / D | ← / → |
 | 前进、后退 | 左摇杆上下（同上） | W / S | ↑ / ↓ |
-| 开火 | ABXY 任一、LB/RB、RT/LT | SPACE（可改） | ENTER（可改） |
-| 主菜单 | 十字键/摇杆上下 + **Start(+) 或 Y 确认** | ↑↓/WS + Enter/空格；数字 1–6 | 同左 |
+| 开火 | A/B/Y、LB/RB、RT/LT（默认不含 X） | SPACE（可改） | ENTER（可改） |
+| 暂停（对局中） | **X** 打开/关闭暂停菜单 | **P** 或 **Esc** | 同左 |
+| 暂停菜单 | 十字键/摇杆 + **Start(+)/Y** 确认；再按 X 继续 | ↑↓ + Enter；数字 1–3；P/Esc 继续 | 同左 |
+| 主菜单 | 十字键/摇杆上下 + **Start(+) 或 Y 确认**；战绩面板用 Esc/Back/确认关闭 | ↑↓/WS + Enter/空格；数字 1–7 | 同左 |
 | 局末菜单（分出胜负后） | 十字键/摇杆上下 + **Start(+) 或 Y 确认**（A/开火不确认） | ↑↓/WS + Enter/空格；数字 1–5 | 同左 |
 | 切 1P ↔ 2P | BACK（**-** 键）/ GUIDE，或 **LB+RB 同时按** | F2 | 同左 |
 | 确认开打（切模式后） | START（**+**），或 R / 任意开火键 | R / 开火 | 同左 |
 | 切地图（仅等待开始） | **RB 按住再按 Y** | M | 同左 |
 | 循环 AI 难度 | 左/右摇杆按下，或 **LB 按住再按 X** | F3 | 同左 |
-| 改键 / 切评估面板 / 退出 | —（仍用键盘） | F4 / F5 / ESC | 同左 |
+| 改键 / 切评估面板 | —（仍用键盘） | F4 / F5 | 同左 |
 
 8BitDo Ultimate 3mode Xbox：**Start = 机身顶栏靠右的 `+`（Plus/Menu）**，**Back = 顶栏靠左的 `-`（Minus/View）**。macOS 蓝牙若 `+` 无响应，局末菜单改按人脸键 **Y** 确认。切 1P/2P 后不会立刻开打；等待界面可切地图，再按 Start(+)/R/开火开打。
 
@@ -152,8 +157,9 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 - 转向是**两段式**：起手一帧只转 1°，同向按住约 0.13 秒后升到满舵 4°/帧（240°/s）。所以「点一下转一格、按住甩炮口」，详见下文「转向：4°/帧 与点按微转」。
 - 屏幕左上/右上的 `HP 100  ANG 042  ERR  +1.5  DIST 412` 是血量 + 炮口角度 + 到对手的**瞄准残差**（度）+ 到对手的**实时距离**（px）：点按时盯着 ERR 收进 ±2° 再开火，就不会再出现「怎么都对不上」的感觉。`DIST` 是两车中心的欧氏距离，超过 **560px**（`AI_FIRE_RANGE`）打的子弹会先飞出屏幕、等于白送一次冷却——先靠近再开火。注意 F5 面板 / 局末报告里的 `DIST` 是**开火那一刻的平均距离**，跟这里随走位实时变化的数字不是一回事。
 - 胜负：一方 **5 条命全丢**才算输；中途被打掉命只是复活，不会结束这局。局末中央显示双方战损，并出现操作菜单：**再来一局 / 战报（仅 1P 有评估时）/ 切 1P↔2P / 切 AI 难度 / 回主菜单**；战报不自动弹出。手柄菜单用 **Start(+) 或 Y 确认**（A 不确认）；键盘可用 Enter/空格/数字键。局末「回主菜单」不关游戏；主菜单「退出」才结束。切模式后需再确认开打；macOS 蓝牙若 `+`/`-` 无响应，菜单用 **Y**，其它用 **LB+RB / LB+X** 和弦即可。
-- 改键：按 **F4** → `1`/`2` 改键盘 P1/P2（按一下新键），`3` 改手柄（按一下手柄按钮），`0` 恢复默认（SPACE / ENTER / ABXY+肩键）。改完立刻原子写入 `tank_keys.json`，下次启动自动读回；配置读坏或键名非法会退回默认并打印原因，不会开不了游戏。ESC 或 F4 关闭面板，面板打开时对战暂停。
-- ESC、F1–F5、M 是保留键，不能被绑成开火键。
+- 对局中 **P / Esc / 手柄 X** 打开暂停菜单（继续 / 回主菜单 / 退出游戏）；对战时 Esc 不再直接关窗口。主菜单、等待开打、局末、F4 配置里 Esc 保持原语义。再按 P/Esc/X 或选「继续」恢复；**LB+X** 仍只切难度、不进暂停。
+- 改键：按 **F4** → `1`/`2` 改键盘 P1/P2（按一下新键），`3` 改手柄（按一下手柄按钮），`0` 恢复默认（SPACE / ENTER / A·B·Y+肩键，不含 X）。改完立刻原子写入 `tank_keys.json`，下次启动自动读回；配置读坏或键名非法会退回默认并打印原因，不会开不了游戏。ESC 或 F4 关闭面板，面板打开时对战暂停。
+- ESC、P、F1–F5、M 是保留键，不能被绑成开火键。
 
 - 手柄的背部拨片（8BitDo 猎户座 XPro、Xbox Elite）在标准通道下是语义按钮 16–20，HUD 里显示 `PADDLE1` 等，可直接在 F4 面板里绑定；猎户座 XPro 的拨片也可以先用 8BitDo 官方软件映射成任意键再用。
 

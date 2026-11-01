@@ -7,6 +7,7 @@ import time
 
 import pygame
 
+import tank_career
 import tank_coach
 
 # --- 初始化设置 ---
@@ -365,9 +366,9 @@ PAD_AXIS_X, PAD_AXIS_Y = _env_ints(
 )
 PAD_TRIGGER_AXES = (pygame.CONTROLLER_AXIS_TRIGGERLEFT,
                     pygame.CONTROLLER_AXIS_TRIGGERRIGHT)
-# ABXY 任一开火（不挑品牌布局），LB/RB 也顺手算上
+# A/B/Y + 肩键开火；X 留给对局暂停（LB+X 仍切难度）
 PAD_FIRE_DEFAULT_BUTTONS = (pygame.CONTROLLER_BUTTON_A, pygame.CONTROLLER_BUTTON_B,
-                            pygame.CONTROLLER_BUTTON_X, pygame.CONTROLLER_BUTTON_Y,
+                            pygame.CONTROLLER_BUTTON_Y,
                             pygame.CONTROLLER_BUTTON_LEFTSHOULDER,
                             pygame.CONTROLLER_BUTTON_RIGHTSHOULDER)
 PAD_FIRE_BUTTONS = _env_ints("TANK_PAD_FIRE", PAD_FIRE_DEFAULT_BUTTONS)
@@ -384,6 +385,8 @@ PAD_MENU_DIFF_FACE = pygame.CONTROLLER_BUTTON_X   # LB 按住 + X = 切难度
 PAD_MENU_MAP_FACE = pygame.CONTROLLER_BUTTON_Y    # RB 按住 + Y = 切地图（仅等待开始）
 # 局末菜单确认：人脸键 Y（不用 A——主开火最易误触再来一局）；Start(+) 仍可用
 PAD_MENU_CONFIRM_FACE = pygame.CONTROLLER_BUTTON_Y
+# 对局暂停：人脸键 X（未按 LB；与切难度和弦分开）
+PAD_PAUSE_FACE = pygame.CONTROLLER_BUTTON_X
 
 # --- 非标准手柄兜底（原始 joystick 通道）---
 # SDL 只把「查得到映射表」的设备当成 GameController（XInput、Switch Pro、
@@ -407,9 +410,9 @@ FIRE_KEY_DEFAULTS = {"p1": "space", "p2": "return"}
 FIRE_SLOTS = ("p1", "p2")
 KEYS_CONFIG_PATH = os.environ.get("TANK_KEYS_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "tank_keys.json")
-# ESC 退出、F2/F3 切模式与难度、F4 开配置、F5 评估、M 切地图，都不允许被抢作开火键
+# ESC/P 暂停、F2/F3 切模式与难度、F4 开配置、F5 评估、M 切地图，都不允许被抢作开火键
 RESERVED_KEY_NAMES = frozenset(
-    {"escape", "esc", "f1", "f2", "f3", "f4", "f5", "m"})
+    {"escape", "esc", "p", "f1", "f2", "f3", "f4", "f5", "m"})
 PAD_BUTTON_MAX = getattr(pygame, "CONTROLLER_BUTTON_MAX", 11)
 PAD_BUTTON_LABELS = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "BACK", 5: "GUIDE",
                      6: "START", 7: "LSTICK", 8: "RSTICK", 9: "LB", 10: "RB",
@@ -1286,17 +1289,20 @@ class Gamepad:
         self.prev_difficulty = False
         self.prev_map = False
         self.prev_confirm_face = False
+        self.prev_pause_face = False
         self._fire_edge = False
         self._restart_edge = False
         self._mode_edge = False
         self._difficulty_edge = False
         self._map_edge = False
         self._confirm_face_edge = False
+        self._pause_face_edge = False
         # CONTROLLERBUTTONDOWN 闩锁：部分 MFI 手柄 get_button(START/BACK) 一直
         # 为假，但事件能到；poll 时并入上升沿，用完清掉。
         self._latch_mode = False
         self._latch_difficulty = False
         self._latch_restart = False
+        self._latch_pause = False
         if self.controller is None:
             self._open(index)
         # 原始模式（RawController）：扳机轴号不可靠，默认只认按钮
@@ -1411,7 +1417,7 @@ class Gamepad:
         return max(-1.0, min(1.0, v))
 
     def fire_held(self):
-        """ABXY / 肩键任一按下，或模拟扳机按过 TRIGGER_ON。"""
+        """开火键 / 肩键任一按下，或模拟扳机按过 TRIGGER_ON（默认不含 X）。"""
         if self._button(PAD_FIRE_BUTTONS):
             return True
         for axis in self.trigger_axes:
@@ -1447,6 +1453,11 @@ class Gamepad:
         """人脸键 Y：局末菜单确认（主循环仅 winner 时认；对局中 Y 仍开火）。"""
         return self._button((PAD_MENU_CONFIRM_FACE,))
 
+    def pause_face_held(self):
+        """人脸键 X：对局暂停；LB 按住时让给切难度，不触发暂停。"""
+        return (self._button((PAD_PAUSE_FACE,))
+                and not self._button((PAD_MENU_LB,)))
+
     def latch_menu_button(self, button):
         """事件路径：把 CONTROLLERBUTTONDOWN 的语义按钮记成下一帧边沿。"""
         try:
@@ -1462,6 +1473,9 @@ class Gamepad:
         if btn in PAD_RESTART_BUTTONS:
             self._latch_restart = True
             return True
+        if btn == PAD_PAUSE_FACE:
+            self._latch_pause = True
+            return True
         return False
 
     def poll(self):
@@ -1472,6 +1486,7 @@ class Gamepad:
         difficulty = self.difficulty_held()
         map_btn = self.map_held()
         confirm_face = self.confirm_face_held()
+        pause_face = self.pause_face_held()
         self._fire_edge = fire and not self.prev_fire
         self._restart_edge = ((restart and not self.prev_restart)
                               or self._latch_restart)
@@ -1480,11 +1495,17 @@ class Gamepad:
                                  or self._latch_difficulty)
         self._map_edge = map_btn and not self.prev_map
         self._confirm_face_edge = confirm_face and not self.prev_confirm_face
+        # LB+X 切难度时 latch_pause 也可能置位：难度边沿优先，丢掉暂停闩锁
+        self._pause_face_edge = (
+            ((pause_face and not self.prev_pause_face) or self._latch_pause)
+            and not self._difficulty_edge)
         self._latch_mode = self._latch_difficulty = self._latch_restart = False
+        self._latch_pause = False
         self.prev_fire, self.prev_restart = fire, restart
         self.prev_mode, self.prev_difficulty = mode, difficulty
         self.prev_map = map_btn
         self.prev_confirm_face = confirm_face
+        self.prev_pause_face = pause_face
         return self
 
     def fire_edge(self):
@@ -1510,10 +1531,14 @@ class Gamepad:
         """局末菜单用 Y 确认（须先 poll()；主循环仅 winner 时响应）。"""
         return self._confirm_face_edge
 
+    def pause_face_edge(self):
+        """对局暂停用 X（须先 poll()；主循环仅对战中响应）。"""
+        return self._pause_face_edge
+
     def menu_consumed_fire(self):
         """本帧菜单和弦占用了肩键/面键，开火应让路，避免误开枪。"""
         return (self._mode_edge or self._difficulty_edge or self._map_edge
-                or self._confirm_face_edge)
+                or self._confirm_face_edge or self._pause_face_edge)
 
     def rumble(self, ms=PAD_RUMBLE_MS, strength=0.8):
         """震动；不支持的手柄（有线猎户座青春版等）静默失败。"""
@@ -1962,14 +1987,36 @@ POST_MENU_DIFF = 3
 POST_MENU_QUIT = 4
 POST_MENU_COUNT = 5
 
-# 启动主菜单；索引与数字键 1–6 对齐
+# 启动主菜单；索引与数字键 1–7 对齐
 MAIN_MENU_1P = 0
 MAIN_MENU_2P = 1
 MAIN_MENU_DIFF = 2
 MAIN_MENU_MAP = 3
-MAIN_MENU_KEYS = 4
-MAIN_MENU_QUIT = 5
-MAIN_MENU_COUNT = 6
+MAIN_MENU_CAREER = 4
+MAIN_MENU_KEYS = 5
+MAIN_MENU_QUIT = 6
+MAIN_MENU_COUNT = 7
+
+# 对局暂停菜单
+PAUSE_MENU_RESUME = 0
+PAUSE_MENU_MAIN = 1
+PAUSE_MENU_QUIT = 2
+PAUSE_MENU_COUNT = 3
+
+
+def pause_menu_item_labels(ascii_only=False):
+    """暂停菜单三项文案（含序号）。"""
+    if ascii_only:
+        return (
+            "1  Resume",
+            "2  Main Menu",
+            "3  Quit Game",
+        )
+    return (
+        "1  继续",
+        "2  回主菜单",
+        "3  退出游戏",
+    )
 
 
 def post_menu_item_labels(ascii_only=False):
@@ -1992,23 +2039,25 @@ def post_menu_item_labels(ascii_only=False):
 
 
 def main_menu_item_labels(ascii_only=False):
-    """主菜单六项文案（含序号）。"""
+    """主菜单七项文案（含序号）。"""
     if ascii_only:
         return (
             "1  1P vs CPU",
             "2  2P Duel",
             "3  AI Difficulty",
             "4  Map",
-            "5  Fire Keys",
-            "6  Quit",
+            "5  Career",
+            "6  Fire Keys",
+            "7  Quit",
         )
     return (
         "1  单人 vs 电脑",
         "2  双人对战",
         "3  AI 难度",
         "4  地图",
-        "5  改开火键",
-        "6  退出",
+        "5  战绩",
+        "6  改开火键",
+        "7  退出",
     )
 
 
@@ -2091,6 +2140,8 @@ def main():
               f"（TANK_COACH=0 关闭）")
     else:
         print("[coach] 评估已关闭（TANK_COACH=0）")
+    print(f"[career] 生涯战绩写入 {os.path.basename(tank_career.CAREER_PATH)}"
+          f"（主菜单「战绩」查看；TANK_CAREER_FILE 可改路径）")
     if OBSTACLE_ENABLED:
         print(f"[walls] 地图 {len(MAPS)} 张（默认 {map_label(DEFAULT_MAP_INDEX)}）；"
               f"等待开始时按 M / RB+Y 切换；TANK_WALLS=0 可关掉全部掩体")
@@ -2101,6 +2152,7 @@ def main():
     small_font = load_font(18)
     big_font = load_font(56)
     tank_coach.ASCII_ONLY = not cjk_font_available()
+    tank_career.ASCII_ONLY = tank_coach.ASCII_ONLY
     if tank_coach.ASCII_ONLY:
         print("[font] 系统里没找到带汉字字形的字体 → 屏幕文案改用英文"
               "（终端仍是中文）；可用 TANK_FONT=/path/to/font.ttc 指定")
@@ -2232,6 +2284,8 @@ def main():
     coach = None
     coach_hist = tank_coach.load_history()
     report_cache = []
+    # 生涯战绩（1P/2P 累计 + 最近对局）；与 coach 历史独立
+    career = tank_career.load()
     # 双方战损（1p/2p 通用）；casualty_lines 在胜负时生成，重开清空
     round_stats = {"p1": blank_side_stats(), "p2": blank_side_stats()}
     casualty_lines = []
@@ -2241,9 +2295,14 @@ def main():
     post_menu_index = 0
     post_view = "menu"
     post_nav = {"prev": 0}
-    # 主菜单：phase "main" | "play"；与局末共用摇杆边沿状态机
+    # 主菜单：phase "main" | "play"；view "menu" | "career"
     main_menu_index = 0
+    main_view = "menu"
     main_nav = {"prev": 0}
+    # 对局暂停：仅 play 且已开打、未分胜负
+    paused_play = False
+    pause_menu_index = PAUSE_MENU_RESUME
+    pause_nav = {"prev": 0}
     skip_menu = skip_main_menu()
     phase = "play" if skip_menu else "main"
 
@@ -2303,9 +2362,30 @@ def main():
         print("[stats] " + " | ".join(casualty_lines))
         return casualty_lines
 
+    def record_career_game(won):
+        """局末记账：以 P1 视角写入生涯战绩（1P/2P 分开）。"""
+        skill = AI_SKILLS[ai_skill]["label"] if mode == "1p" else ""
+        ok, info = tank_career.record_game(
+            career,
+            mode=mode,
+            won=bool(won),
+            kills=round_stats["p1"]["kills"],
+            deaths=round_stats["p1"]["deaths"],
+            skill=skill,
+            map_label=map_label(map_index),
+        )
+        if not ok:
+            print(f"[career] 战绩写入失败：{info}")
+        else:
+            side = career["totals"]["1p" if mode == "1p" else "2p"]
+            print(f"[career] 已记一局 → {os.path.basename(str(info))} "
+                  f"（{mode.upper()} 胜{side['wins']}负{side['losses']}）")
+        return ok
+
     def finish_round(won=None):
-        """一局结束：终端打详细评估 → 写历史 → 缓存屏幕报告。"""
+        """一局结束：战损 → 生涯记账 → 终端评估 → 写 coach 历史 → 缓存屏幕报告。"""
         capture_casualties()
+        record_career_game(won)
         reset_post_menu()
         if coach is None:
             return []
@@ -2372,11 +2452,29 @@ def main():
 
     def main_menu_move(delta):
         nonlocal main_menu_index
+        if main_view != "menu":
+            return
         main_menu_index = (main_menu_index + delta) % MAIN_MENU_COUNT
 
+    def close_career_view():
+        """战绩面板 → 回主菜单列表。"""
+        nonlocal main_view
+        main_view = "menu"
+        return True
+
+    def open_career_view():
+        """主菜单「战绩」：只读面板（汇总 + 最近对局）。"""
+        nonlocal main_view, career
+        career = tank_career.load()
+        main_view = "career"
+        print("[career] 打开战绩面板")
+        return True
+
     def main_menu_confirm(index=None):
-        """主菜单确认：开打进等待 / 改难度地图 / 改键 / 退出。"""
+        """主菜单确认：开打进等待 / 改难度地图 / 战绩 / 改键 / 退出。"""
         nonlocal running
+        if main_view == "career":
+            return close_career_view()
         if index is None:
             index = main_menu_index
         index = int(index) % MAIN_MENU_COUNT
@@ -2392,6 +2490,8 @@ def main():
         if index == MAIN_MENU_MAP:
             advance_map()
             return True
+        if index == MAIN_MENU_CAREER:
+            return open_career_view()
         if index == MAIN_MENU_KEYS:
             bind_state["slot"] = "menu"
             set_msg("Pick 1/2/3 to rebind, 0 to reset, ESC to close")
@@ -2404,7 +2504,13 @@ def main():
         return False
 
     def poll_main_menu_pad():
-        """主菜单：摇杆/十字键移动；Start(+) 或 Y 确认。"""
+        """主菜单：摇杆/十字键移动；Start(+) 或 Y 确认；战绩层 Esc/Back/确认关闭。"""
+        if main_view == "career":
+            if any(pad.mode_edge() or pad.restart_edge()
+                   or pad.confirm_face_edge() for pad in pads):
+                close_career_view()
+                return True
+            return False
         raw = post_nav_raw_dir()
         prev = main_nav["prev"]
         if raw != 0 and raw != prev:
@@ -2412,6 +2518,72 @@ def main():
         main_nav["prev"] = raw
         if any(pad.restart_edge() or pad.confirm_face_edge() for pad in pads):
             main_menu_confirm()
+            return True
+        return False
+
+    def can_pause_play():
+        """对局中可开暂停：已开打、未分胜负、无 F4。"""
+        return (phase == "play" and not awaiting_start and winner is None
+                and bind_state["slot"] is None)
+
+    def open_pause_menu():
+        nonlocal paused_play, pause_menu_index
+        paused_play = True
+        pause_menu_index = PAUSE_MENU_RESUME
+        pause_nav["prev"] = 0
+        print("[pause] 暂停")
+        return True
+
+    def close_pause_menu():
+        nonlocal paused_play
+        paused_play = False
+        pause_nav["prev"] = 0
+        print("[pause] 继续")
+        return True
+
+    def toggle_pause_menu():
+        if paused_play:
+            return close_pause_menu()
+        if can_pause_play():
+            return open_pause_menu()
+        return False
+
+    def pause_menu_move(delta):
+        nonlocal pause_menu_index
+        if not paused_play:
+            return
+        pause_menu_index = (pause_menu_index + delta) % PAUSE_MENU_COUNT
+
+    def pause_menu_confirm(index=None):
+        """暂停菜单：继续 / 回主菜单 / 退出游戏。"""
+        nonlocal running
+        if index is None:
+            index = pause_menu_index
+        index = int(index) % PAUSE_MENU_COUNT
+        if index == PAUSE_MENU_RESUME:
+            close_pause_menu()
+            return True
+        if index == PAUSE_MENU_MAIN:
+            close_pause_menu()
+            go_main_menu()
+            return True
+        if index == PAUSE_MENU_QUIT:
+            running = False
+            return True
+        return False
+
+    def poll_pause_menu_pad():
+        """暂停菜单：X 再按 = 继续；摇杆移动；Start(+)/Y 确认。"""
+        if any(pad.pause_face_edge() for pad in pads):
+            close_pause_menu()
+            return True
+        raw = post_nav_raw_dir()
+        prev = pause_nav["prev"]
+        if raw != 0 and raw != prev:
+            pause_menu_move(raw)
+        pause_nav["prev"] = raw
+        if any(pad.restart_edge() or pad.confirm_face_edge() for pad in pads):
+            pause_menu_confirm()
             return True
         return False
 
@@ -2570,6 +2742,7 @@ def main():
     def enter_mode_from_menu(new_mode):
         """主菜单选 1P/2P：摆场地并进入等待开始。"""
         nonlocal mode, tank1, tank2, winner, shake, awaiting_start, phase
+        nonlocal paused_play
         mode = new_mode
         tank1, tank2 = reset()
         bind_pads()
@@ -2577,6 +2750,7 @@ def main():
         winner = None
         shake = 0.0
         awaiting_start = True
+        paused_play = False
         phase = "play"
         if mode == "1p":
             label = AI_SKILLS[ai_skill]["label"]
@@ -2594,27 +2768,32 @@ def main():
 
     def go_main_menu():
         """局末「回主菜单」：清胜负，回到启动菜单。"""
-        nonlocal tank1, tank2, winner, shake, awaiting_start, phase
+        nonlocal tank1, tank2, winner, shake, awaiting_start, phase, main_view
+        nonlocal paused_play
         tank1, tank2 = reset()
         bind_pads()
         apply_map()
         winner = None
         shake = 0.0
         awaiting_start = False
+        paused_play = False
         phase = "main"
+        main_view = "menu"
         main_menu_index_reset()
         print("[menu] 已回主菜单")
         set_toast("Main Menu" if tank_coach.ASCII_ONLY else "主菜单")
         return True
 
     def main_menu_index_reset():
-        nonlocal main_menu_index
+        nonlocal main_menu_index, main_view
         main_menu_index = MAIN_MENU_1P
+        main_view = "menu"
         main_nav["prev"] = 0
 
     def toggle_mode():
         """F2 / LB+RB：双人 ↔ 单人 vs 电脑；摆好场地后进入等待开始。"""
         nonlocal mode, tank1, tank2, winner, shake, awaiting_start, phase
+        nonlocal paused_play
         mode = "2p" if mode == "1p" else "1p"
         tank1, tank2 = reset()
         bind_pads()
@@ -2622,6 +2801,7 @@ def main():
         winner = None
         shake = 0.0
         awaiting_start = True
+        paused_play = False
         phase = "play"
         if mode == "1p":
             label = AI_SKILLS[ai_skill]["label"]
@@ -2667,10 +2847,12 @@ def main():
     def rematch():
         """胜负后重开一局（直接开打，不进等待）。"""
         nonlocal tank1, tank2, winner, shake, awaiting_start, phase
+        nonlocal paused_play
         tank1, tank2 = reset()
         bind_pads()
         winner = None
         shake = 0.0
+        paused_play = False
         awaiting_start = False
         phase = "play"
         set_toast("Rematch" if tank_coach.ASCII_ONLY else "再来一局")
@@ -2746,7 +2928,13 @@ def main():
                 if bind_state["slot"] is not None:
                     handle_config_key(event.key, bind_state["slot"])
                 elif phase == "main":
-                    if event.key == pygame.K_ESCAPE:
+                    if main_view == "career":
+                        if event.key in (pygame.K_ESCAPE, pygame.K_b,
+                                         pygame.K_BACKSPACE,
+                                         pygame.K_RETURN, pygame.K_KP_ENTER,
+                                         pygame.K_SPACE, pygame.K_y):
+                            close_career_view()
+                    elif event.key == pygame.K_ESCAPE:
                         main_menu_confirm(MAIN_MENU_QUIT)
                     elif event.key in (pygame.K_UP, pygame.K_w):
                         main_menu_move(-1)
@@ -2767,6 +2955,8 @@ def main():
                         main_menu_confirm(4)
                     elif event.key in (pygame.K_6, pygame.K_KP6):
                         main_menu_confirm(5)
+                    elif event.key in (pygame.K_7, pygame.K_KP7):
+                        main_menu_confirm(6)
                     elif event.key == pygame.K_F4:
                         main_menu_confirm(MAIN_MENU_KEYS)
                 elif winner is not None:
@@ -2797,7 +2987,26 @@ def main():
                     elif event.key == pygame.K_F4:
                         bind_state["slot"] = "menu"
                         set_msg("Pick 1/2/3 to rebind, 0 to reset, ESC to close")
+                elif paused_play:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_p):
+                        close_pause_menu()
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        pause_menu_move(-1)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        pause_menu_move(1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER,
+                                       pygame.K_SPACE):
+                        pause_menu_confirm()
+                    elif event.key in (pygame.K_1, pygame.K_KP1):
+                        pause_menu_confirm(0)
+                    elif event.key in (pygame.K_2, pygame.K_KP2):
+                        pause_menu_confirm(1)
+                    elif event.key in (pygame.K_3, pygame.K_KP3):
+                        pause_menu_confirm(2)
+                elif event.key in (pygame.K_ESCAPE, pygame.K_p) and can_pause_play():
+                    open_pause_menu()
                 elif event.key == pygame.K_ESCAPE:
+                    # 等待开打等非对战态：Esc 仍直接退出
                     running = False
                 elif event.key == pygame.K_F4:
                     # F4：打开攻击键配置面板（这期间对战暂停，按键全归面板）
@@ -2839,23 +3048,32 @@ def main():
         # --- 更新 ---
         keys = pygame.key.get_pressed()
         refresh_pads(pads)
-        # 配置面板打开时暂停对战（按键全归面板），但照常渲染，方便边看边改
-        paused = bind_state["slot"] is not None
+        # F4 配置或对局暂停：冻结对战，仍渲染
+        config_open = bind_state["slot"] is not None
 
         menu_ate_fire = False
-        if not paused:
-            # 手柄：主菜单 / 局末菜单优先；否则专用键 / 等待开始确认
-            if phase == "main":
+        if not config_open:
+            # 手柄：暂停菜单 / 主菜单 / 局末 / 对局中 X 暂停 / 专用键
+            if paused_play:
+                if poll_pause_menu_pad():
+                    menu_ate_fire = True
+                else:
+                    menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
+            elif phase == "main":
                 if poll_main_menu_pad():
                     menu_ate_fire = True
             elif winner is not None:
                 if poll_post_menu_pad():
                     menu_ate_fire = True
+            elif any(pad.difficulty_edge() for pad in pads):
+                # LB+X 切难度优先于单独 X 暂停
+                cycle_difficulty()
+                menu_ate_fire = True
+            elif can_pause_play() and any(pad.pause_face_edge() for pad in pads):
+                open_pause_menu()
+                menu_ate_fire = True
             elif any(pad.mode_edge() for pad in pads):
                 toggle_mode()
-                menu_ate_fire = True
-            elif any(pad.difficulty_edge() for pad in pads):
-                cycle_difficulty()
                 menu_ate_fire = True
             elif awaiting_start and any(pad.map_edge() for pad in pads):
                 cycle_map()
@@ -2867,10 +3085,11 @@ def main():
             if not menu_ate_fire:
                 menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
 
-            if phase == "main" or awaiting_start:
+            if phase == "main" or awaiting_start or paused_play:
                 if toast["frames"] > 0:
                     toast["frames"] -= 1
-            else:
+            elif not paused_play:
+                # 对战更新（本帧刚开暂停则上面分支已挡住）
                 for tank in (tank1, tank2):
                     tank.tick()
                     if winner is not None:
@@ -2983,6 +3202,7 @@ def main():
                                     print(f"[life] {tank_label(tank)} 命已用尽，"
                                           f"本局结束")
                                     capture_casualties()
+                                    record_career_game(won=(tank is tank2))
                                     reset_post_menu()
                             break
 
@@ -3039,10 +3259,10 @@ def main():
         screen.blit(hint2, (SCREEN_WIDTH - hint2.get_width() - 12, 10))
 
         # 模式提示（键盘 F2/F3；有手柄时另见底栏 Back / R-stick）
-        mode_text = (f"Mode: 1P vs CPU - F2 switch, F3 AI level "
-                     f"({AI_SKILLS[ai_skill]['label']}), F4 fire keys, F5 coach"
+        mode_text = (f"Mode: 1P vs CPU - F2 switch, F3 AI "
+                     f"({AI_SKILLS[ai_skill]['label']}), P/Esc pause, F4/F5"
                      if mode == "1p" else
-                     "Mode: 2P duel - F2 play vs CPU, F4 fire keys")
+                     "Mode: 2P duel - F2 vs CPU, P/Esc pause, F4 fire keys")
         mode_hint = small_font.render(mode_text, True, GRAY)
         screen.blit(mode_hint, mode_hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                          SCREEN_HEIGHT - 38)))
@@ -3053,7 +3273,7 @@ def main():
             pad_text = (f"Pads: {len(pads)} connected"
                         + (f" ({raw_n} raw mode)" if raw_n else "")
                         + f" - L-stick drive, {pad_fire_label()} fire, "
-                          "LB+RB 1P-2P, LB+X AI, RB+Y map, Start(+)/fire")
+                          "X pause, LB+RB 1P-2P, LB+X AI, RB+Y map, Start(+)")
         else:
             pad_text = "No gamepad - plug in a controller (auto-detect)"
         pad_hint = small_font.render(pad_text, True, GRAY)
@@ -3076,36 +3296,82 @@ def main():
         draw_lives(screen, tank2,
                    SCREEN_WIDTH - 12 - lives_pips_width(), 54)
 
-        # 主菜单 / 等待开始 / 胜负提示
-        if phase == "main" and bind_state["slot"] is None:
+        # 对局暂停 / 主菜单 / 等待开始 / 胜负提示
+        if paused_play and bind_state["slot"] is None:
             title = big_font.render(
-                "TANK DUEL" if tank_coach.ASCII_ONLY else "坦克对战", True, WHITE)
+                "PAUSED" if tank_coach.ASCII_ONLY else "暂停", True, WHITE)
             screen.blit(title, title.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150)))
-            status = font.render(
-                f"AI {AI_SKILLS[ai_skill]['label']}   Map {map_label(map_index)}"
-                if tank_coach.ASCII_ONLY else
-                f"难度 {AI_SKILLS[ai_skill]['label']}　地图 {map_label(map_index)}",
-                True, GRAY)
-            screen.blit(status, status.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 108)))
-            labels = main_menu_item_labels(tank_coach.ASCII_ONLY)
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 90)))
+            labels = pause_menu_item_labels(tank_coach.ASCII_ONLY)
             for i, label in enumerate(labels):
-                if i == main_menu_index:
+                if i == pause_menu_index:
                     color, prefix = YELLOW, "> "
                 else:
                     color, prefix = WHITE, "  "
                 row = font.render(prefix + label, True, color)
                 screen.blit(row, row.get_rect(
                     center=(SCREEN_WIDTH // 2,
-                            SCREEN_HEIGHT // 2 - 60 + i * 30)))
+                            SCREEN_HEIGHT // 2 - 30 + i * 32)))
             hint = small_font.render(
-                "Up/Down  Enter/Space  Start(+)/Y  1-6"
+                "P/Esc/X resume  Up/Down  Enter  Start(+)/Y"
                 if tank_coach.ASCII_ONLY else
-                "上下选择  Enter/空格  Start(+)/Y 确认  数字键 1-6",
+                "P/Esc/X 继续  上下选择  Enter  Start(+)/Y 确认",
                 True, GRAY)
             screen.blit(hint, hint.get_rect(
-                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 140)))
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 90)))
+        elif phase == "main" and bind_state["slot"] is None:
+            if main_view == "career":
+                title = big_font.render(
+                    "CAREER" if tank_coach.ASCII_ONLY else "生涯战绩", True, WHITE)
+                screen.blit(title, title.get_rect(
+                    center=(SCREEN_WIDTH // 2, 56)))
+                lines = tank_career.panel_lines(
+                    career, ascii_only=tank_coach.ASCII_ONLY)
+                card_w = min(520, SCREEN_WIDTH - 40)
+                h = 32 + 18 * max(1, len(lines))
+                draw_coach_card(
+                    screen, font, small_font,
+                    "CAREER" if tank_coach.ASCII_ONLY else "生涯战绩",
+                    lines,
+                    (SCREEN_WIDTH - card_w) // 2,
+                    max(90, (SCREEN_HEIGHT - h) // 2 - 20),
+                    width=card_w)
+                tip = small_font.render(
+                    "Esc / Back / Enter / Y — return"
+                    if tank_coach.ASCII_ONLY else
+                    "Esc / Back / Enter / Y — 返回菜单",
+                    True, GRAY)
+                screen.blit(tip, tip.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 48)))
+            else:
+                title = big_font.render(
+                    "TANK DUEL" if tank_coach.ASCII_ONLY else "坦克对战", True, WHITE)
+                screen.blit(title, title.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 160)))
+                status = font.render(
+                    f"AI {AI_SKILLS[ai_skill]['label']}   Map {map_label(map_index)}"
+                    if tank_coach.ASCII_ONLY else
+                    f"难度 {AI_SKILLS[ai_skill]['label']}　地图 {map_label(map_index)}",
+                    True, GRAY)
+                screen.blit(status, status.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 118)))
+                labels = main_menu_item_labels(tank_coach.ASCII_ONLY)
+                for i, label in enumerate(labels):
+                    if i == main_menu_index:
+                        color, prefix = YELLOW, "> "
+                    else:
+                        color, prefix = WHITE, "  "
+                    row = font.render(prefix + label, True, color)
+                    screen.blit(row, row.get_rect(
+                        center=(SCREEN_WIDTH // 2,
+                                SCREEN_HEIGHT // 2 - 70 + i * 28)))
+                hint = small_font.render(
+                    "Up/Down  Enter/Space  Start(+)/Y  1-7"
+                    if tank_coach.ASCII_ONLY else
+                    "上下选择  Enter/空格  Start(+)/Y 确认  数字键 1-7",
+                    True, GRAY)
+                screen.blit(hint, hint.get_rect(
+                    center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 150)))
         elif awaiting_start and bind_state["slot"] is None:
             if mode == "1p":
                 title = (f"1P vs CPU ({AI_SKILLS[ai_skill]['label']})"
