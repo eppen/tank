@@ -1911,6 +1911,33 @@ def draw_lives(surf, tank, x, y, size=8, gap=4):
                          border_radius=2)
 
 
+def blank_side_stats():
+    """一局里单侧战损计数（与 coach 解耦，1p/2p 通用）。"""
+    return {"shots": 0, "hits": 0, "shield_hits": 0, "kills": 0, "deaths": 0}
+
+
+def format_casualty_lines(stats_by_side, lives_by_side, labels_by_side,
+                          ascii_only=False):
+    """局末双方战损文案（屏幕中央用）。
+
+    stats_by_side / lives_by_side / labels_by_side 的 key 为 "p1"/"p2"。
+    """
+    lines = []
+    for key in ("p1", "p2"):
+        s = stats_by_side[key]
+        label = labels_by_side[key]
+        lives = lives_by_side[key]
+        if ascii_only:
+            lines.append(
+                f"{label}  K{s['kills']} D{s['deaths']}  "
+                f"HIT {s['hits']}/{s['shots']}  LIVES {lives}")
+        else:
+            lines.append(
+                f"{label}  击毁{s['kills']} 被毁{s['deaths']}  "
+                f"命中{s['hits']}/{s['shots']}  剩命{lives}")
+    return lines
+
+
 def _parse_mode():
     """决定开局模式与 AI 难度。
 
@@ -2077,6 +2104,9 @@ def main():
         bullets.empty()
         explosions.empty()
         report_cache.clear()
+        casualty_lines.clear()
+        round_stats["p1"] = blank_side_stats()
+        round_stats["p2"] = blank_side_stats()
         toast["text"], toast["frames"] = "", 0
         t1 = Tank(
             120, 120, RED,
@@ -2114,6 +2144,9 @@ def main():
     coach = None
     coach_hist = tank_coach.load_history()
     report_cache = []
+    # 双方战损（1p/2p 通用）；casualty_lines 在胜负时生成，重开清空
+    round_stats = {"p1": blank_side_stats(), "p2": blank_side_stats()}
+    casualty_lines = []
     toast = {"text": "", "frames": 0}
     coach_panel = False      # F5：实时评估面板
 
@@ -2126,6 +2159,9 @@ def main():
     # 仅切 1P/2P 后为 True：场地已摆好，等 Start(+)/R/开火才开打；首次启动直接开打
     awaiting_start = False
 
+    def side_key(tank):
+        return "p1" if tank is tank1 else "p2"
+
     def try_fire(tank):
         """键盘与手柄共用的开火逻辑（冷却由 Tank.fire 内部控制）。"""
         if not tank.can_fire():
@@ -2134,6 +2170,7 @@ def main():
         bullets.add(bullet)
         muzzle = tank.muzzle_position()
         explosions.add(Explosion(muzzle.x, muzzle.y, YELLOW, 16, 7))
+        round_stats[side_key(tank)]["shots"] += 1
         if coach is not None:
             if tank is tank1:
                 coach.on_shot(tank, tank2, bullet)   # 记下开枪那一刻的距离/准度
@@ -2141,8 +2178,24 @@ def main():
                 coach.on_enemy_shot()
         return True
 
+    def capture_casualties():
+        """胜负时生成双方战损文案（屏幕 + 终端）。"""
+        if mode == "1p":
+            labels = {
+                "p1": "YOU" if tank_coach.ASCII_ONLY else "你",
+                "p2": "CPU",
+            }
+        else:
+            labels = {"p1": "P1", "p2": "P2"}
+        lives = {"p1": tank1.lives, "p2": tank2.lives}
+        casualty_lines[:] = format_casualty_lines(
+            round_stats, lives, labels, ascii_only=tank_coach.ASCII_ONLY)
+        print("[stats] " + " | ".join(casualty_lines))
+        return casualty_lines
+
     def finish_round(won=None):
         """一局结束：终端打详细评估 → 写历史 → 缓存屏幕报告。"""
+        capture_casualties()
         if coach is None:
             return []
         try:
@@ -2443,7 +2496,7 @@ def main():
         menu_ate_fire = False
         if not paused:
             # 手柄菜单：专用键 / 事件闩锁 / LB+RB·LB+X 和弦；
-            # 等待开始 / 胜负后：START 或任意开火键确认
+            # 等待开始：START 或开火确认；胜负后仅 Start(+)/R 重开（开火留给读战损）
             if any(pad.mode_edge() for pad in pads):
                 toggle_mode()
                 menu_ate_fire = True
@@ -2457,8 +2510,7 @@ def main():
                     pad.restart_edge() or pad.fire_edge() for pad in pads):
                 confirm_start()
                 menu_ate_fire = True
-            elif winner is not None and any(
-                    pad.restart_edge() or pad.fire_edge() for pad in pads):
+            elif winner is not None and any(pad.restart_edge() for pad in pads):
                 rematch()
                 menu_ate_fire = True
             if not menu_ate_fire:
@@ -2540,6 +2592,11 @@ def main():
                                                      YELLOW, 26, 14))
                             shake = max(shake, 5.0)
                             shielded = tank.invuln > 0    # 复活无敌：这一发不掉血
+                            owner_s = round_stats[side_key(bullet.owner)]
+                            if shielded:
+                                owner_s["shield_hits"] += 1
+                            else:
+                                owner_s["hits"] += 1
                             if coach is not None:
                                 coach.on_hit(by_human=(bullet.owner is tank1),
                                              shield=shielded, bullet=bullet)
@@ -2550,6 +2607,8 @@ def main():
                                                          tank.color, 72, 28))
                                 shake = max(shake, 15.0)
                                 tank.kill()  # 移出精灵组，不再绘制
+                                owner_s["kills"] += 1
+                                round_stats[side_key(tank)]["deaths"] += 1
                                 if coach is not None:
                                     coach.on_death(victim_is_human=(tank is tank1))
                                 if tank.lose_life():
@@ -2572,6 +2631,7 @@ def main():
                                               else "P2 (blue) wins!")
                                     print(f"[life] {tank_label(tank)} 命已用尽，"
                                           f"本局结束")
+                                    capture_casualties()
                             break
 
                 shake = max(0.0, shake - 0.9)
@@ -2686,11 +2746,19 @@ def main():
                 center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40)))
         elif winner:
             text = big_font.render(winner, True, WHITE)
+            screen.blit(text, text.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 52)))
+            for i, line in enumerate(casualty_lines):
+                row = font.render(line, True,
+                                  (200, 120, 120) if i == 0 else (120, 150, 220))
+                screen.blit(row, row.get_rect(
+                    center=(SCREEN_WIDTH // 2,
+                            SCREEN_HEIGHT // 2 - 8 + i * 28)))
             sub = font.render(
-                "R/Start(+)/fire rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
+                "R / Start(+) rematch  F2/LB+RB 1P-2P  F3/LB+X AI  "
                 "F4 fire  F5 coach  ESC quit", True, GRAY)
-            screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
-            screen.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 26)))
+            screen.blit(sub, sub.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 62)))
 
         # 表现评估：局末报告卡（左下，避开中央的胜负提示） / F5 实时面板
         if coach is not None:

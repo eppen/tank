@@ -88,7 +88,7 @@ def pad_main_scenario():
     # 这里只验证「击毁 → 胜负 → Start 重开」这条链路，压到 1 条命；
     # 多条命与复活流程见 _selftest_lives.py。
     g.MAX_LIVES = 1
-    seen = {"fire": [], "tanks": 0}
+    seen = {"fire": [], "tanks": 0, "rematch_at": [], "stats": []}
 
     orig_init = g.Tank.__init__
 
@@ -108,14 +108,27 @@ def pad_main_scenario():
         seen["fire"].append(self.color)
         return orig_fire(self)
 
+    orig_print = builtins.print
+
+    def capturing_print(*args, **kwargs):
+        line = " ".join(str(a) for a in args)
+        if "[stats]" in line:
+            seen["stats"].append(line)
+        if "再来一局" in line or line.endswith("Rematch") or "Rematch" == line.strip():
+            seen["rematch_at"].append(frame["i"])
+        # set_toast 不打印；rematch() 只 set_toast，靠 tanks 计数判断
+        return orig_print(*args, **kwargs)
+
     g.Tank.__init__ = patched_init
     g.Tank.fire = counting_fire
+    builtins.print = capturing_print
 
     fc1, fc2 = FakeController(), FakeController()
     fc2.name = "Fake P2"
     g.sdl2_controller = FakeSDL2([fc1, fc2])
 
     frame = {"i": 0}
+    tanks_before_start = {"n": None}
     # 10 发击毁一次（DAMAGE=10），每 20 帧按一下 A：约 180 帧打完，200 帧左右分胜负
 
     def fake_get():
@@ -123,6 +136,9 @@ def pad_main_scenario():
         frame["i"] += 1
         # 每 20 帧按一下 A（上升沿）→ 冷却刚好够再开火
         fc1.buttons[pygame.CONTROLLER_BUTTON_A] = (i % 20) < 2
+        # 胜负后继续按 A 若干帧：不应 rematch；259 记下坦克数，260 Start 才重开
+        if i == 259:
+            tanks_before_start["n"] = seen["tanks"]
         fc1.buttons[pygame.CONTROLLER_BUTTON_START] = i in (260, 261)
         if i >= 340:
             return [pygame.event.Event(pygame.QUIT)]
@@ -130,15 +146,21 @@ def pad_main_scenario():
 
     pygame.event.get = fake_get
     try:
-        g.main()
-    except SystemExit:
-        pass
+        try:
+            g.main()
+        except SystemExit:
+            pass
+    finally:
+        builtins.print = orig_print
     print("PAD_MAIN fired =", len(seen["fire"]),
           "tank_colors =", seen["fire"], "tanks_created =", seen["tanks"])
     assert len(seen["fire"]) >= 10, seen
     assert set(seen["fire"]) == {g.RED}, "只有 P1 的手柄开火，不能串到 P2"
+    assert seen["stats"], "局末应打印双方战损 [stats]"
+    assert tanks_before_start["n"] == 2, \
+        f"胜负后按 A 不应 rematch，Start 前 tanks={tanks_before_start['n']}"
     assert seen["tanks"] == 4, "初始 2 + 按 Start 重开 2"
-    print("PAD_MAIN OK：手柄开火→击毁→Start 重开")
+    print("PAD_MAIN OK：手柄开火→击毁→战损→A 不重开→Start 重开")
 
 
 if "--pad-main" in sys.argv:

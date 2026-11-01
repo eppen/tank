@@ -194,10 +194,30 @@ assert wins, "命扣完后应显示胜负提示"
 assert wins[-1] == "P1 (red) wins!", wins
 win_frame = min(f for f, t in texts if "wins!" in t)
 
+# 局末双方战损文案（击毁/被毁/命中）；探针 SPACE 不应 rematch（键盘本就不认开火重开）
+casualty = [t for f, t in texts if f >= win_frame
+            and (("击毁" in t and "被毁" in t)
+                 or ("HIT" in t and "LIVES" in t))]
+assert len(casualty) >= 2, f"应显示双方战损：{casualty}"
+assert any(t.startswith("P1") for t in casualty), casualty
+assert any(t.startswith("P2") for t in casualty), casualty
+assert any("rematch" in t.lower() for f, t in texts if f >= win_frame), \
+    "胜负后应提示 R/Start rematch"
+
 # 回合结束后（探针两枪）不再有任何开火
 late = [f for f, _ in fires if f > win_frame]
 assert not late, f"回合结束后不该还能开火：{late}"
 assert max(f for f, _ in fires) == SHOT_FRAMES[19] + 1, [f for f, _ in fires]
+
+# format_casualty_lines 纯函数
+fmt = g.format_casualty_lines(
+    {"p1": {"shots": 10, "hits": 4, "shield_hits": 1, "kills": 2, "deaths": 1},
+     "p2": {"shots": 8, "hits": 3, "shield_hits": 0, "kills": 1, "deaths": 2}},
+    {"p1": 3, "p2": 0},
+    {"p1": "P1", "p2": "P2"},
+    ascii_only=True)
+assert fmt[0].startswith("P1") and "HIT 4/10" in fmt[0] and "LIVES 3" in fmt[0], fmt
+assert fmt[1].startswith("P2") and "K1" in fmt[1] and "D2" in fmt[1], fmt
 
 # HUD 命数：两种极端值都能画（0 条命 / 满命）
 surf = pygame.Surface((g.SCREEN_WIDTH, g.SCREEN_HEIGHT))
@@ -209,7 +229,7 @@ for n in range(g.MAX_LIVES + 1):
     g.draw_lives(surf, probe, 10, 10)
 assert g.lives_pips_width() > 0
 
-print("LIVES OK：2 条命 -> 掉命复活（满血/出生点/无敌）-> 命尽分胜负 -> 停火")
+print("LIVES OK：2 条命 -> 掉命复活 -> 命尽分胜负 + 双方战损 -> 停火")
 
 
 # ------------------------------------------------- 额外场景：真实复活点
