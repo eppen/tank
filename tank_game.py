@@ -2323,14 +2323,13 @@ def main():
         return 0
 
     def poll_post_menu_pad():
-        """胜负菜单：摇杆/十字键边沿移动，A/开火边沿或 Start 确认；B/Back 退出报告。"""
+        """胜负菜单：摇杆/十字键边沿移动，仅 Start(+) 确认；战报层仅 Back 返回。
+
+        不用开火键确认/返回：对局末尾的开火边沿否则会立刻「再来一局」，看不到战损。
+        """
         nonlocal post_view
         if post_view == "report":
             if any(pad.mode_edge() for pad in pads):
-                post_view = "menu"
-                return True
-            # B 也算开火键之一：用 fire_edge 当「返回」在报告层
-            if any(pad.fire_edge() or pad.restart_edge() for pad in pads):
                 post_view = "menu"
                 return True
             return False
@@ -2339,7 +2338,7 @@ def main():
         if raw != 0 and raw != prev:
             post_menu_move(raw)
         post_nav["prev"] = raw
-        if any(pad.restart_edge() or pad.fire_edge() for pad in pads):
+        if any(pad.restart_edge() for pad in pads):
             post_menu_confirm()
             return True
         return False
@@ -2917,8 +2916,8 @@ def main():
                                 max(90, (SCREEN_HEIGHT - h) // 2 - 20),
                                 width=card_w)
                 tip = small_font.render(
-                    "Esc / B / Back — return to menu" if tank_coach.ASCII_ONLY
-                    else "Esc / B / Back — 返回菜单", True, GRAY)
+                    "Esc / Back — return to menu" if tank_coach.ASCII_ONLY
+                    else "Esc / Back(-) — 返回菜单", True, GRAY)
                 screen.blit(tip, tip.get_rect(
                     center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 48)))
             else:
@@ -2946,8 +2945,9 @@ def main():
                         center=(SCREEN_WIDTH // 2,
                                 SCREEN_HEIGHT // 2 + 8 + i * 28)))
                 hint = small_font.render(
-                    "Up/Down  Enter/A/Start  1-5" if tank_coach.ASCII_ONLY
-                    else "上下选择  Enter/A/Start 确认  数字键 1-5",
+                    "Up/Down  Enter/Space  Start(+)  1-5"
+                    if tank_coach.ASCII_ONLY else
+                    "上下选择  Enter/空格  Start(+)确认  数字键 1-5",
                     True, GRAY)
                 screen.blit(hint, hint.get_rect(
                     center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 160)))
