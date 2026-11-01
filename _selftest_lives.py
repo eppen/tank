@@ -15,6 +15,7 @@ import os
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("TANK_SKIP_MENU", "1")
 
 import pygame
 

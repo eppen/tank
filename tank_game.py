@@ -1962,6 +1962,15 @@ POST_MENU_DIFF = 3
 POST_MENU_QUIT = 4
 POST_MENU_COUNT = 5
 
+# 启动主菜单；索引与数字键 1–6 对齐
+MAIN_MENU_1P = 0
+MAIN_MENU_2P = 1
+MAIN_MENU_DIFF = 2
+MAIN_MENU_MAP = 3
+MAIN_MENU_KEYS = 4
+MAIN_MENU_QUIT = 5
+MAIN_MENU_COUNT = 6
+
 
 def post_menu_item_labels(ascii_only=False):
     """局末菜单五项文案（含序号）。"""
@@ -1971,15 +1980,50 @@ def post_menu_item_labels(ascii_only=False):
             "2  Battle Report",
             "3  Switch 1P/2P",
             "4  AI Difficulty",
-            "5  Quit",
+            "5  Back to Main",
         )
     return (
         "1  再来一局",
         "2  战报 Battle Report",
         "3  切换 1P/2P",
         "4  切换 AI 难度",
-        "5  退出",
+        "5  回主菜单",
     )
+
+
+def main_menu_item_labels(ascii_only=False):
+    """主菜单六项文案（含序号）。"""
+    if ascii_only:
+        return (
+            "1  1P vs CPU",
+            "2  2P Duel",
+            "3  AI Difficulty",
+            "4  Map",
+            "5  Fire Keys",
+            "6  Quit",
+        )
+    return (
+        "1  单人 vs 电脑",
+        "2  双人对战",
+        "3  AI 难度",
+        "4  地图",
+        "5  改开火键",
+        "6  退出",
+    )
+
+
+def skip_main_menu():
+    """CLI 指定模式或 TANK_SKIP_MENU=1 时跳过主菜单（自测/脚本用）。"""
+    if os.environ.get("TANK_SKIP_MENU") == "1":
+        return True
+    for arg in sys.argv[1:]:
+        a = arg.strip().lower()
+        if a in ("--1p", "-1", "--single", "--cpu", "--ai",
+                 "--2p", "-2", "--dual", "--versus"):
+            return True
+        if a.startswith("--mode="):
+            return True
+    return False
 
 
 def _parse_mode():
@@ -1988,7 +2032,7 @@ def _parse_mode():
     优先级：命令行参数 > 环境变量 > 默认（2p，保持原有双人对战行为）。
         python3.11 tank_game.py --1p --ai=hard
         TANK_MODE=1p TANK_AI=easy python3.11 tank_game.py
-    运行中还能用 F2 切模式、F3 切难度。
+    运行中还能用 F2 切模式、F3 切难度。无 CLI 跳过时先进入主菜单。
     """
     mode = os.environ.get("TANK_MODE", "2p")
     skill = os.environ.get("TANK_AI", "normal")
@@ -2197,6 +2241,11 @@ def main():
     post_menu_index = 0
     post_view = "menu"
     post_nav = {"prev": 0}
+    # 主菜单：phase "main" | "play"；与局末共用摇杆边沿状态机
+    main_menu_index = 0
+    main_nav = {"prev": 0}
+    skip_menu = skip_main_menu()
+    phase = "play" if skip_menu else "main"
 
     tank1, tank2 = reset()
     wait_for_joysticks()   # macOS 蓝牙/MFI：set_mode 后需泵事件才枚举得到
@@ -2204,8 +2253,14 @@ def main():
     bind_pads()
     winner = None
     shake = 0.0
-    # 仅切 1P/2P 后为 True：场地已摆好，等 Start(+)/R/开火才开打；首次启动直接开打
+    # 仅切 1P/2P（或主菜单选模式）后为 True：等 Start(+)/R/开火才开打
+    # 跳过主菜单时保持旧行为：直接开打
     awaiting_start = False
+    if phase == "main":
+        print("[menu] 主菜单：选模式后等待开始；局末「回主菜单」可返回"
+              "（TANK_SKIP_MENU=1 / --1p|--2p 可跳过）")
+    else:
+        print("[menu] 已跳过主菜单（TANK_SKIP_MENU 或 CLI 指定模式）")
 
     def side_key(tank):
         return "p1" if tank is tank1 else "p2"
@@ -2284,7 +2339,7 @@ def main():
 
     def post_menu_confirm(index=None):
         """确认当前（或指定）菜单项；灰显则 toast 原因。"""
-        nonlocal post_view, running
+        nonlocal post_view
         if index is None:
             index = post_menu_index
         index = int(index) % POST_MENU_COUNT
@@ -2311,7 +2366,52 @@ def main():
             cycle_difficulty()
             return True
         if index == POST_MENU_QUIT:
+            go_main_menu()
+            return True
+        return False
+
+    def main_menu_move(delta):
+        nonlocal main_menu_index
+        main_menu_index = (main_menu_index + delta) % MAIN_MENU_COUNT
+
+    def main_menu_confirm(index=None):
+        """主菜单确认：开打进等待 / 改难度地图 / 改键 / 退出。"""
+        nonlocal running
+        if index is None:
+            index = main_menu_index
+        index = int(index) % MAIN_MENU_COUNT
+        if index == MAIN_MENU_1P:
+            enter_mode_from_menu("1p")
+            return True
+        if index == MAIN_MENU_2P:
+            enter_mode_from_menu("2p")
+            return True
+        if index == MAIN_MENU_DIFF:
+            cycle_difficulty()
+            return True
+        if index == MAIN_MENU_MAP:
+            advance_map()
+            return True
+        if index == MAIN_MENU_KEYS:
+            bind_state["slot"] = "menu"
+            set_msg("Pick 1/2/3 to rebind, 0 to reset, ESC to close")
+            print(f"[keys] 打开攻击键配置：P1={fire_names['p1'].upper()} "
+                  f"P2={fire_names['p2'].upper()} 手柄={pad_fire_label()}")
+            return True
+        if index == MAIN_MENU_QUIT:
             running = False
+            return True
+        return False
+
+    def poll_main_menu_pad():
+        """主菜单：摇杆/十字键移动；Start(+) 或 Y 确认。"""
+        raw = post_nav_raw_dir()
+        prev = main_nav["prev"]
+        if raw != 0 and raw != prev:
+            main_menu_move(raw)
+        main_nav["prev"] = raw
+        if any(pad.restart_edge() or pad.confirm_face_edge() for pad in pads):
+            main_menu_confirm()
             return True
         return False
 
@@ -2451,11 +2551,9 @@ def main():
             tank2.obstacles = walls
         return walls
 
-    def cycle_map():
-        """仅等待开始时可切：empty → pillars → corridors → …"""
+    def advance_map():
+        """循环地图并重建掩体（主菜单 / 等待开始共用）。"""
         nonlocal map_index
-        if not awaiting_start:
-            return False
         map_index = (map_index + 1) % len(MAPS)
         apply_map()
         label = map_label(map_index)
@@ -2463,9 +2561,60 @@ def main():
         set_toast(f"Map: {label}" if tank_coach.ASCII_ONLY else f"地图：{label}")
         return True
 
+    def cycle_map():
+        """仅等待开始时可切：empty → pillars → corridors → …"""
+        if not awaiting_start:
+            return False
+        return advance_map()
+
+    def enter_mode_from_menu(new_mode):
+        """主菜单选 1P/2P：摆场地并进入等待开始。"""
+        nonlocal mode, tank1, tank2, winner, shake, awaiting_start, phase
+        mode = new_mode
+        tank1, tank2 = reset()
+        bind_pads()
+        apply_map()
+        winner = None
+        shake = 0.0
+        awaiting_start = True
+        phase = "play"
+        if mode == "1p":
+            label = AI_SKILLS[ai_skill]["label"]
+            msg = (f"Mode: 1P vs CPU ({label}) — press Start(+)/R/fire"
+                   if tank_coach.ASCII_ONLY else
+                   f"模式：单人 vs 电脑（{label}）— 按 Start(+)/R/开火 开始")
+            print("[mode] 主菜单 → 单人 vs 电脑（等待 Start 开始）")
+        else:
+            msg = ("Mode: 2P duel — press Start(+)/R/fire"
+                   if tank_coach.ASCII_ONLY else
+                   "模式：双人对战 — 按 Start(+)/R/开火 开始")
+            print("[mode] 主菜单 → 双人对战（等待 Start 开始）")
+        set_toast(msg, frames=180)
+        return True
+
+    def go_main_menu():
+        """局末「回主菜单」：清胜负，回到启动菜单。"""
+        nonlocal tank1, tank2, winner, shake, awaiting_start, phase
+        tank1, tank2 = reset()
+        bind_pads()
+        apply_map()
+        winner = None
+        shake = 0.0
+        awaiting_start = False
+        phase = "main"
+        main_menu_index_reset()
+        print("[menu] 已回主菜单")
+        set_toast("Main Menu" if tank_coach.ASCII_ONLY else "主菜单")
+        return True
+
+    def main_menu_index_reset():
+        nonlocal main_menu_index
+        main_menu_index = MAIN_MENU_1P
+        main_nav["prev"] = 0
+
     def toggle_mode():
         """F2 / LB+RB：双人 ↔ 单人 vs 电脑；摆好场地后进入等待开始。"""
-        nonlocal mode, tank1, tank2, winner, shake, awaiting_start
+        nonlocal mode, tank1, tank2, winner, shake, awaiting_start, phase
         mode = "2p" if mode == "1p" else "1p"
         tank1, tank2 = reset()
         bind_pads()
@@ -2473,6 +2622,7 @@ def main():
         winner = None
         shake = 0.0
         awaiting_start = True
+        phase = "play"
         if mode == "1p":
             label = AI_SKILLS[ai_skill]["label"]
             msg = (f"Mode: 1P vs CPU ({label}) — press Start(+)/R/fire"
@@ -2515,13 +2665,14 @@ def main():
         return True
 
     def rematch():
-        """R / START：胜负后重开一局（直接开打，不进等待）。"""
-        nonlocal tank1, tank2, winner, shake, awaiting_start
+        """胜负后重开一局（直接开打，不进等待）。"""
+        nonlocal tank1, tank2, winner, shake, awaiting_start, phase
         tank1, tank2 = reset()
         bind_pads()
         winner = None
         shake = 0.0
         awaiting_start = False
+        phase = "play"
         set_toast("Rematch" if tank_coach.ASCII_ONLY else "再来一局")
         return True
 
@@ -2594,8 +2745,32 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if bind_state["slot"] is not None:
                     handle_config_key(event.key, bind_state["slot"])
+                elif phase == "main":
+                    if event.key == pygame.K_ESCAPE:
+                        main_menu_confirm(MAIN_MENU_QUIT)
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        main_menu_move(-1)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        main_menu_move(1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER,
+                                       pygame.K_SPACE):
+                        main_menu_confirm()
+                    elif event.key in (pygame.K_1, pygame.K_KP1):
+                        main_menu_confirm(0)
+                    elif event.key in (pygame.K_2, pygame.K_KP2):
+                        main_menu_confirm(1)
+                    elif event.key in (pygame.K_3, pygame.K_KP3):
+                        main_menu_confirm(2)
+                    elif event.key in (pygame.K_4, pygame.K_KP4):
+                        main_menu_confirm(3)
+                    elif event.key in (pygame.K_5, pygame.K_KP5):
+                        main_menu_confirm(4)
+                    elif event.key in (pygame.K_6, pygame.K_KP6):
+                        main_menu_confirm(5)
+                    elif event.key == pygame.K_F4:
+                        main_menu_confirm(MAIN_MENU_KEYS)
                 elif winner is not None:
-                    # 局末菜单：Esc 报告层返回 / 菜单层退出；F2/F3/R 不再旁路
+                    # 局末菜单：Esc 报告层返回 / 菜单层回主菜单；F2/F3/R 不再旁路
                     if post_view == "report":
                         if event.key in (pygame.K_ESCAPE, pygame.K_b,
                                          pygame.K_BACKSPACE):
@@ -2669,8 +2844,11 @@ def main():
 
         menu_ate_fire = False
         if not paused:
-            # 手柄：胜负走局末菜单；否则专用键 / 和弦；等待开始用 Start/开火确认
-            if winner is not None:
+            # 手柄：主菜单 / 局末菜单优先；否则专用键 / 等待开始确认
+            if phase == "main":
+                if poll_main_menu_pad():
+                    menu_ate_fire = True
+            elif winner is not None:
                 if poll_post_menu_pad():
                     menu_ate_fire = True
             elif any(pad.mode_edge() for pad in pads):
@@ -2689,7 +2867,7 @@ def main():
             if not menu_ate_fire:
                 menu_ate_fire = any(pad.menu_consumed_fire() for pad in pads)
 
-            if awaiting_start:
+            if phase == "main" or awaiting_start:
                 if toast["frames"] > 0:
                     toast["frames"] -= 1
             else:
@@ -2898,8 +3076,37 @@ def main():
         draw_lives(screen, tank2,
                    SCREEN_WIDTH - 12 - lives_pips_width(), 54)
 
-        # 切模式后等待开始 / 胜负提示
-        if awaiting_start and bind_state["slot"] is None:
+        # 主菜单 / 等待开始 / 胜负提示
+        if phase == "main" and bind_state["slot"] is None:
+            title = big_font.render(
+                "TANK DUEL" if tank_coach.ASCII_ONLY else "坦克对战", True, WHITE)
+            screen.blit(title, title.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150)))
+            status = font.render(
+                f"AI {AI_SKILLS[ai_skill]['label']}   Map {map_label(map_index)}"
+                if tank_coach.ASCII_ONLY else
+                f"难度 {AI_SKILLS[ai_skill]['label']}　地图 {map_label(map_index)}",
+                True, GRAY)
+            screen.blit(status, status.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 108)))
+            labels = main_menu_item_labels(tank_coach.ASCII_ONLY)
+            for i, label in enumerate(labels):
+                if i == main_menu_index:
+                    color, prefix = YELLOW, "> "
+                else:
+                    color, prefix = WHITE, "  "
+                row = font.render(prefix + label, True, color)
+                screen.blit(row, row.get_rect(
+                    center=(SCREEN_WIDTH // 2,
+                            SCREEN_HEIGHT // 2 - 60 + i * 30)))
+            hint = small_font.render(
+                "Up/Down  Enter/Space  Start(+)/Y  1-6"
+                if tank_coach.ASCII_ONLY else
+                "上下选择  Enter/空格  Start(+)/Y 确认  数字键 1-6",
+                True, GRAY)
+            screen.blit(hint, hint.get_rect(
+                center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 140)))
+        elif awaiting_start and bind_state["slot"] is None:
             if mode == "1p":
                 title = (f"1P vs CPU ({AI_SKILLS[ai_skill]['label']})"
                          if tank_coach.ASCII_ONLY else

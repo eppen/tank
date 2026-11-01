@@ -21,6 +21,7 @@ import types
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("TANK_SKIP_MENU", "1")
 os.environ.pop("TANK_MODE", None)
 os.environ.pop("TANK_AI", None)
 _COACH_TMP = "/tmp/tk_coach_selftest.json"

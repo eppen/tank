@@ -18,6 +18,7 @@ import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("TANK_SKIP_MENU", "1")
 os.environ.pop("TANK_MODE", None)
 os.environ.pop("TANK_AI", None)
 # 开火键指向临时文件：否则会读到开发机本地的 tank_keys.json（改过键时
