@@ -1,4 +1,4 @@
-# Microsoft Store 上架清单（坦克大战）
+# Microsoft Store 上架清单（Twin Treads 双履）
 
 本游戏为 **本地离线** pygame 桌面应用：无账号、无联网、无内购。通过 **PyInstaller onedir → MSIX（runFullTrust）→ Partner Center** 上架。
 
@@ -29,7 +29,7 @@ Identity / Publisher 必须与 Partner Center 应用页生成的值一致（创�
 
 | 项 | 建议 |
 | --- | --- |
-| 名称 | 坦克大战 / Tank Game |
+| 名称 | Twin Treads（中文可写「双履」） |
 | 简短说明 | 本地双人与人机坦克对战 |
 | 说明 | 单人 AI / 双人同机；手柄与键鼠；生涯战绩本地保存 |
 | 类别 | 游戏 → 动作 / 射击 |

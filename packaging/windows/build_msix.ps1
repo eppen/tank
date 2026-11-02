@@ -41,7 +41,9 @@ Copy-Item -Force $ManifestSrc (Join-Path $Stage "AppxManifest.xml")
 
 # 替换 Identity（简易字符串替换）
 $manifestPath = Join-Path $Stage "AppxManifest.xml"
-$xml = Get-Content $manifestPath -Raw
+# 必须按 UTF-8 读：Windows PowerShell 5.1 的 Get-Content -Raw 默认按 ANSI 解码，
+# 会把中文注释/描述读成乱码，甚至吞掉标签，导致 makeappx 清单校验失败。
+$xml = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
 $xml = $xml -replace 'Name="YourPublisher\.TankGame"', "Name=`"$IdentityName`""
 $xml = $xml -replace 'Publisher="CN=YourPublisher"', "Publisher=`"$Publisher`""
 $xml = $xml -replace 'Version="1\.0\.0\.0"', "Version=`"$Version`""
@@ -72,6 +74,9 @@ foreach ($name in $required) {
 
 if (Test-Path $OutMsix) { Remove-Item -Force $OutMsix }
 & $MakeAppx pack /d $Stage /p $OutMsix /o
+if ($LASTEXITCODE -ne 0) {
+    throw "makeappx failed (exit $LASTEXITCODE) — see output above"
+}
 Write-Host "==> MSIX: $OutMsix"
 Write-Host "Sign with signtool (Store upload often uses Partner Center signing) before sideload."
 Write-Host "See packaging/windows/STORE.md for Partner Center steps."

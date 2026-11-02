@@ -1,4 +1,4 @@
-# 坦克大战（tank_game）
+# 双履 Twin Treads（tank_game）
 
 文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
 

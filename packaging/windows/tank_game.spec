@@ -23,7 +23,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["_selftest", "_selftest_ai", "_selftest_body", "_selftest_career",
+    # numpy 仅被 pygame.sndarray / surfarray 引用（本项目不用），且 PyInstaller 6.12
+    # 冻结 numpy 2.3 会崩（CPU dispatcher tracer already initlized）；pygame 对这两个
+    # 子模块有 ImportError 兜底。排除后包体也小 ~30MB。
+    excludes=["numpy", "_selftest", "_selftest_ai", "_selftest_body", "_selftest_career",
               "_selftest_coach", "_selftest_font", "_selftest_keys", "_selftest_lives",
               "_selftest_main", "_selftest_menu", "_selftest_pad", "_selftest_paths",
               "_selftest_pause", "_selftest_raw", "_selftest_turn", "_selftest_walls",

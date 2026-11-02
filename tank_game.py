@@ -32,7 +32,7 @@ SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 FPS = 60
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Top-Down Tank Game")
+pygame.display.set_caption("Twin Treads 双履")
 
 
 # --- 字体：屏幕上要画中文，必须自己找一款带汉字字形的字体 ---

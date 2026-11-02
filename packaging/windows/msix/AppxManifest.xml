@@ -17,9 +17,9 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>坦克大战</DisplayName>
+    <DisplayName>Twin Treads</DisplayName>
     <PublisherDisplayName>YourPublisher</PublisherDisplayName>
-    <Description>本地双人 / 人机坦克对战。无账号、无联网。</Description>
+    <Description>本地双人 / 人机坦克对战：5 条命、掩体走位、复活无敌帧。无账号、无联网。</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
@@ -35,7 +35,7 @@
   <Applications>
     <Application Id="TankGame" Executable="TankGame\TankGame.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="坦克大战"
+        DisplayName="Twin Treads"
         Description="本地双人 / 人机坦克对战"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
