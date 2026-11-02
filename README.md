@@ -22,18 +22,24 @@
 
 ## 障碍物（掩体）/ 地图
 
-内置 **3 张地图**（`MAPS`），默认 **PILLARS**；在切 1P/2P 后的**等待开始**界面按 **M** 或手柄 **RB+Y** 循环切换，开打后本局锁定。掩体挡车、挡子弹、挡视线（AI 看不见你就不开枪）。
+内置 **9 张地图**（`MAPS`），默认 **PILLARS**；在切 1P/2P 后的**等待开始**界面按 **M** 或手柄 **RB+Y** 循环切换，开打后本局锁定。掩体挡车、挡子弹、挡视线（AI 看不见你就不开枪）。
 
 | 地图 | 说明 |
 | --- | --- |
 | EMPTY | 无掩体 |
 | PILLARS | 4 个 56×56 柱（原布局）：`(240,120)/(240,300)/(504,244)/(504,424)` |
 | CORRIDORS | 中线上下两条横廊：`(280,180,240×40)` 与对称块 |
+| CROSS | 中心十字四臂，四象限经外圈走廊互通 |
+| DIAGONAL | 四条横柱沿出生对角线斜置，中央全空 |
+| CORNERS | 四角 80×80 大方块，左右 20px 竖缝只过子弹不过车 |
+| RING | 四块围环，对角 64px 缺口，内圈四面可入 |
+| HALLS | 纵向双廊（CORRIDORS 竖版），三条走廊 |
+| BLOCKS | 中央 2×2 方块阵，两条出生对角线从阵心穿过 |
 
-- 每张非空图都满足三条硬约束（`_selftest_walls.py` 逐张断言）：**180° 旋转对称**、**不压出生点/复活角**（离四角 ≥ 62px）、**不挡两条出生对角线**；方块厚度 ≥ 子弹两帧位移（18px）。
+- 每张非空图都满足三条硬约束（`_selftest_walls.py` 逐张断言）：**180° 旋转对称**、**不压出生点/复活角**（离四角 ≥ 62px）、**不挡两条出生对角线**（两条对角线斜率 ±9/14，不是 45°）；方块厚度 ≥ 子弹两帧位移（18px）。
 - **不随机、不破坏**：R / START 重开沿用本局地图；`TANK_WALLS=0` 时所有地图都建成空组。
 - **碰撞/视线判定只有一份出处**（都在 `tank_game.py`）：`obstacle_at()`、`resolve_obstacles()`、`has_line_of_sight()`、`tank_blocked_ahead()`、`separate_tanks()`、`clamp_to_field()`。
-- **AI 认得掩体**：隔墙不开枪；撞墙停车并朝一侧绕行（不做寻路）。
+- **AI 认得掩体**：隔墙不开枪；撞墙停车并朝一侧绕行（不做寻路）。每张非空图都有 1500 帧 AI vs AI 回归，确认掩体没把 AI 卡死。
 - **子弹先撞墙，再看坦克**：穿墙命中不成立；隔墙弹在评估里按 miss 计。
 
 ```bash
@@ -131,7 +137,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | `TANK_COACH=0` | 关闭 1p 模式下的表现评估（不统计、不写历史） | `TANK_COACH=0 python3.11 tank_game.py --1p` |
 | `TANK_COACH_FILE=...` | 评估历史文件位置（默认见「数据目录」） | `TANK_COACH_FILE=/tmp/c.json` |
 | `TANK_CAREER_FILE=...` | 生涯战绩文件位置（默认见「数据目录」） | `TANK_CAREER_FILE=/tmp/career.json` |
-| `TANK_WALLS=0` | 关掉场地里的 4 个掩体方块（排查「是不是墙导致的」问题时用） | `TANK_WALLS=0 python3.11 tank_game.py` |
+| `TANK_WALLS=0` | 关掉场地里的全部掩体方块（排查「是不是墙导致的」问题时用） | `TANK_WALLS=0 python3.11 tank_game.py` |
 
 **数据目录**：开发态默认写在脚本同目录；PyInstaller / MSIX 打包后写 `%LOCALAPPDATA%\TankGame\`（安装目录只读）。单文件环境变量仍可覆盖。自测：`python3.11 _selftest_paths.py`。
 

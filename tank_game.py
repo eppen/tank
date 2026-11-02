@@ -275,7 +275,8 @@ RESPAWN_CORNERS = ((120, 120), (SCREEN_WIDTH - 120, 120),
 # 每张图的 rects 都必须满足三条硬约束（`_selftest_walls.py` 对非空图逐张断言）：
 #   1) 180° 旋转对称：每块绕屏幕中心转 180° 后仍在集合里。
 #   2) 不压出生点 / 复活角：到 RESPAWN_CORNERS 的距离 >= TANK_HALF + 40。
-#   3) 不挡两条出生对角线：开局第一枪视线必须通。
+#   3) 不挡两条出生对角线：开局第一枪视线必须通。对角线是
+#      (120,120)↔(680,480) 与 (680,120)↔(120,480)，斜率 ±9/14（不是 45°）。
 # 另外 min(w, h) >= BULLET_SPEED * 2。TANK_WALLS=0 时所有地图都建成空组。
 # 切图只在「等待开始」界面（键盘 M / 手柄 RB+Y）；开打后本局锁定。
 OBSTACLE_ENABLED = os.environ.get("TANK_WALLS", "1") != "0"
@@ -287,10 +288,44 @@ _MAP_PILLARS = ((240, 120, OBSTACLE_SIZE, OBSTACLE_SIZE),
 # 中线上下两条横廊（180° 对称），不挡出生对角线
 _MAP_CORRIDORS = ((280, 180, 240, 40),
                   (280, 380, 240, 40))
+# 中心十字：四臂之间留空，四象限经外圈走廊互通
+_MAP_CROSS = ((384, 96, 32, 168),
+              (384, 336, 32, 168),
+              (96, 284, 168, 32),
+              (536, 284, 168, 32))
+# 斜角双柱：四条横柱沿出生对角线外侧斜置，中央大片空地
+_MAP_DIAGONAL = ((250, 150, 100, 36),
+                 (450, 150, 100, 36),
+                 (250, 414, 100, 36),
+                 (450, 414, 100, 36))
+# 四角块：左右各叠两块，中间 20px 竖缝只过子弹不过车
+_MAP_CORNERS = ((160, 210, 80, 80),
+                (560, 210, 80, 80),
+                (160, 310, 80, 80),
+                (560, 310, 80, 80))
+# 环形：四块围成环，对角四个缺口宽 64px（> 车体直径 44px）
+_MAP_RING = ((360, 156, 80, 40),
+             (360, 404, 80, 40),
+             (180, 260, 40, 80),
+             (580, 260, 40, 80))
+# 纵向双廊：CORRIDORS 的竖向版，三条走廊
+_MAP_HALLS = ((200, 220, 40, 160),
+              (560, 220, 40, 160))
+# 中央方块阵：2×2 小方块，两条出生对角线从阵心穿过
+_MAP_BLOCKS = ((280, 160, 40, 40),
+               (480, 160, 40, 40),
+               (280, 400, 40, 40),
+               (480, 400, 40, 40))
 MAPS = (
     {"id": "empty", "label": "EMPTY", "rects": ()},
     {"id": "pillars", "label": "PILLARS", "rects": _MAP_PILLARS},
     {"id": "corridors", "label": "CORRIDORS", "rects": _MAP_CORRIDORS},
+    {"id": "cross", "label": "CROSS", "rects": _MAP_CROSS},
+    {"id": "diagonal", "label": "DIAGONAL", "rects": _MAP_DIAGONAL},
+    {"id": "corners", "label": "CORNERS", "rects": _MAP_CORNERS},
+    {"id": "ring", "label": "RING", "rects": _MAP_RING},
+    {"id": "halls", "label": "HALLS", "rects": _MAP_HALLS},
+    {"id": "blocks", "label": "BLOCKS", "rects": _MAP_BLOCKS},
 )
 DEFAULT_MAP_INDEX = next(i for i, m in enumerate(MAPS) if m["id"] == "pillars")
 # 兼容旧自测 / 文档：默认等于 pillars 的 rects；运行中切图会改这个引用
@@ -2782,7 +2817,7 @@ def main():
         return True
 
     def cycle_map():
-        """仅等待开始时可切：empty → pillars → corridors → …"""
+        """仅等待开始时可切：按 MAPS 顺序循环（默认从 PILLARS 开始）。"""
         if not awaiting_start:
             return False
         return advance_map()

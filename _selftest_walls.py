@@ -7,7 +7,8 @@
 3. 沿墙滑行：45° 顶墙时切向坐标真的在走（不是撞上就粘死）；
 4. 纯函数口径：obstacle_at / has_line_of_sight / tank_blocked_ahead；
 5. 子弹：进块即被判定命中并 kill()，空地上飞不算撞墙；
-6. AI：隔墙不开枪（want_fire = False），1500 帧 AI vs AI 不卡死、不穿墙；
+6. AI：隔墙不开枪（want_fire = False）；每张非空地图 1500 帧 AI vs AI
+   不卡死、不穿墙；
 7. TANK_WALLS 开关：build_obstacles() 受 OBSTACLE_ENABLED 控制。
 
 运行：SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_walls.py
@@ -91,7 +92,7 @@ if not g.OBSTACLE_ENABLED:
 
 
 # =============================================== 1) 每张地图的布局不变量
-assert len(g.MAPS) >= 3, g.MAPS
+assert len(g.MAPS) >= 9, g.MAPS
 assert g.MAPS[g.DEFAULT_MAP_INDEX]["id"] == "pillars"
 for m in g.MAPS:
     if m["id"] == "empty":
@@ -218,60 +219,82 @@ for _ in range(40):
     assert blocked_ai.want_fire is False, "隔墙不该开枪"
     assert g.obstacle_at(watcher.pos, WALLS, g.TANK_HALF - 1) is None
 
-# 两个 AI 带障碍物打 1500 帧（含子弹、撞墙、命中、掉血）：一行照抄 main() 的
+print("[6] 隔墙 OK：目标藏在方块后，AI 40 帧内不开枪")
+
+# 两个 AI 带障碍物打 1500 帧（含子弹、撞墙、命中、掉血）：一路照抄 main() 的
 # 战斗判定顺序 —— 子弹先撞墙、再看坦克。要证明的是「掩体没有把 AI 变成雕塑」：
 #   1) 不越界、不陷进方块；
 #   2) 双方都真的走了 200px 以上（会主动压上 / 拉开，而不是原地磨）；
 #   3) 真的打得起来（有人掉血）—— 撞墙停车 + 隔墙不开枪叠在一起时，最容易
 #      退化成「两车隔着柱子站桩、谁也不开枪」。
-a_red, a_blue = g.TankAI("normal", seed=21), g.TankAI("hard", seed=22)
-r_tank = new_tank(120, 120, color=g.RED)
-b_tank = new_tank(680, 480, color=g.BLUE, angle=180.0)
-r_tank.obstacles = b_tank.obstacles = WALLS
-start = (pygame.Vector2(r_tank.pos), pygame.Vector2(b_tank.pos))
-travelled = [0.0, 0.0]
-prev = [pygame.Vector2(r_tank.pos), pygame.Vector2(b_tank.pos)]
-bullets = pygame.sprite.Group()
-shots = [0, 0]
-for _ in range(1500):
-    for i, (me, ai, other) in enumerate(((r_tank, a_red, b_tank),
-                                         (b_tank, a_blue, r_tank))):
-        me.tick()
-        ai.update(me, other)
-        me.drive(ai.turn(), ai.move())
-        if ai.want_fire and me.can_fire():
-            bullets.add(me.fire())
-            shots[i] += 1
-        travelled[i] += me.pos.distance_to(prev[i])
-        prev[i].update(me.pos)
-        assert g.TANK_HALF <= me.pos.x <= g.SCREEN_WIDTH - g.TANK_HALF, me.pos
-        assert g.TANK_HALF <= me.pos.y <= g.SCREEN_HEIGHT - g.TANK_HALF, me.pos
-        assert g.obstacle_at(me.pos, WALLS, g.TANK_HALF - 1) is None, \
-            f"AI 开进方块了：{me.pos}"
-        me.sync_image()
-    # 帧末分离：两台车本帧都动完了，按「各让一半」分开（顺序与 main() 一致）
-    g.separate_tanks(r_tank, b_tank)
-    for b in bullets.sprites():
-        b.update()
-        assert g.obstacle_at(b.pos, WALLS, g.BULLET_RADIUS) is None or b.alive()
-        if g.obstacle_at(b.pos, WALLS, g.BULLET_RADIUS):
-            b.kill()                        # 先撞墙：不再看坦克
-            continue
-        for victim in (r_tank, b_tank):
-            if victim is not b.owner and b.touches(victim):
-                victim.take_hit()
-                b.kill()
-                break
+def run_ai_battle(rects, map_id, seed_a, seed_b, frames=1500):
+    """跑一场无渲染 AI vs AI，返回 (shots, travelled, net, hp_loss)。"""
+    walls = tuple(pygame.Rect(*spec) for spec in rects)
+    a_red, a_blue = g.TankAI("normal", seed=seed_a), g.TankAI("hard", seed=seed_b)
+    r_tank = new_tank(120, 120, color=g.RED)
+    b_tank = new_tank(680, 480, color=g.BLUE, angle=180.0)
+    r_tank.obstacles = b_tank.obstacles = walls
+    start = (pygame.Vector2(r_tank.pos), pygame.Vector2(b_tank.pos))
+    travelled = [0.0, 0.0]
+    prev = [pygame.Vector2(r_tank.pos), pygame.Vector2(b_tank.pos)]
+    bullets = pygame.sprite.Group()
+    shots = [0, 0]
+    for _ in range(frames):
+        for i, (me, ai, other) in enumerate(((r_tank, a_red, b_tank),
+                                             (b_tank, a_blue, r_tank))):
+            me.tick()
+            ai.update(me, other)
+            me.drive(ai.turn(), ai.move())
+            if ai.want_fire and me.can_fire():
+                bullets.add(me.fire())
+                shots[i] += 1
+            travelled[i] += me.pos.distance_to(prev[i])
+            prev[i].update(me.pos)
+            assert g.TANK_HALF <= me.pos.x <= g.SCREEN_WIDTH - g.TANK_HALF, \
+                (map_id, me.pos)
+            assert g.TANK_HALF <= me.pos.y <= g.SCREEN_HEIGHT - g.TANK_HALF, \
+                (map_id, me.pos)
+            assert g.obstacle_at(me.pos, walls, g.TANK_HALF - 1) is None, \
+                f"{map_id}: AI 开进方块了：{me.pos}"
+            me.sync_image()
+        # 帧末分离：两台车本帧都动完了，按「各让一半」分开（顺序与 main() 一致）
+        g.separate_tanks(r_tank, b_tank)
+        for b in bullets.sprites():
+            b.update()
+            if g.obstacle_at(b.pos, walls, g.BULLET_RADIUS):
+                b.kill()                        # 先撞墙：不再看坦克
+                continue
+            for victim in (r_tank, b_tank):
+                if victim is not b.owner and b.touches(victim):
+                    victim.take_hit()
+                    b.kill()
+                    break
+    net = [r_tank.pos.distance_to(start[0]), b_tank.pos.distance_to(start[1])]
+    hp_loss = (g.MAX_HP - r_tank.hp) + (g.MAX_HP - b_tank.hp)
+    return shots, travelled, net, hp_loss
 
-net = [r_tank.pos.distance_to(start[0]), b_tank.pos.distance_to(start[1])]
-hp_loss = (g.MAX_HP - r_tank.hp) + (g.MAX_HP - b_tank.hp)
-assert min(travelled) > 200, f"AI 卡死了：累计位移 {travelled}"
-assert min(net) > 40, f"AI 基本没挪窝：{net}"
-assert sum(shots) > 10, f"AI 隔着掩体基本不开枪了：{shots}"
-assert hp_loss > 0, f"1500 帧一发都没打中，掩体把战斗卡死了（开火 {shots}）"
-print(f"[6] AI OK：隔墙 40 帧不开枪；AI vs AI 1500 帧共开火 {shots[0]}/{shots[1]} 发、"
-      f"掉血 {hp_loss}、累计位移 {travelled[0]:.0f}/{travelled[1]:.0f}px、"
-      f"终点位移 {net[0]:.0f}/{net[1]:.0f}px，全程在场地内且不穿墙")
+
+def assert_ai_battle(map_spec, index):
+    """每张非空图都必须打得起来：固定种子，同一套断言。"""
+    if map_spec["id"] == "pillars":
+        seed_a, seed_b = 21, 22            # 默认图保留原基线种子
+    else:
+        seed_a, seed_b = 21 + 3 * index, 22 + 3 * index
+    shots, travelled, net, hp_loss = run_ai_battle(
+        map_spec["rects"], map_spec["id"], seed_a, seed_b)
+    assert min(travelled) > 200, f"{map_spec['label']} AI 卡死了：累计位移 {travelled}"
+    assert min(net) > 40, f"{map_spec['label']} AI 基本没挪窝：{net}"
+    assert sum(shots) > 10, f"{map_spec['label']} AI 隔着掩体基本不开枪了：{shots}"
+    assert hp_loss > 0, (
+        f"{map_spec['label']} 1500 帧一发都没打中，掩体把战斗卡死了（开火 {shots}）")
+    print(f"[6] {map_spec['label']} AI OK：1500 帧开火 {shots[0]}/{shots[1]} 发、"
+          f"掉血 {hp_loss}、累计位移 {travelled[0]:.0f}/{travelled[1]:.0f}px、"
+          f"终点位移 {net[0]:.0f}/{net[1]:.0f}px，全程在场地内且不穿墙")
+
+
+for _index, _map in enumerate(g.MAPS):
+    if _map["id"] != "empty":
+        assert_ai_battle(_map, _index)
 
 
 # =============================================== 7) TANK_WALLS 开关
