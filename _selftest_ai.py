@@ -15,6 +15,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -23,7 +24,7 @@ os.environ.pop("TANK_MODE", None)
 os.environ.pop("TANK_AI", None)
 # 开火键指向临时文件：否则会读到开发机本地的 tank_keys.json（改过键时
 # "P2 按 ENTER 开火" 的断言会失败，看起来像代码坏了）
-_KEYS_TMP = "/tmp/tk_ai_selftest.json"
+_KEYS_TMP = os.path.join(tempfile.gettempdir(), "tk_ai_selftest.json")
 if "TANK_KEYS_FILE" not in os.environ:
     try:
         os.remove(_KEYS_TMP)          # 上一轮遗留的改键也不能影响断言
@@ -229,8 +230,9 @@ def ai_main_scenario():
 
     events_at = {
         200: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F3)],   # 切难度
-        260: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F2)],   # -> 双人
-        320: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)],  # P2 键盘开火
+        260: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F2)],   # -> 双人（进入等待开始）
+        300: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)],  # 等待开始：确认开打
+        340: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)],  # P2 键盘开火
     }
 
     def fake_get():
@@ -248,7 +250,7 @@ def ai_main_scenario():
 
     ai_fire = [(f, c) for f, c, is_ai in seen["fire"] if is_ai and f < 260]
     human_p2 = [(f, c) for f, c, is_ai in seen["fire"]
-                if (not is_ai) and c == g.BLUE and f >= 320]
+                if (not is_ai) and c == g.BLUE and f >= 340]
     print("AI_CREATED =", len(ai_created), "TANKS =", len(tanks_created),
           "AI_FIRE_BEFORE_SWITCH =", len(ai_fire),
           "P2_HUMAN_FIRE_AFTER_F2 =", len(human_p2))
