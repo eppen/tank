@@ -1,0 +1,25 @@
+[project]
+name = "twin-treads"
+version = "1.0.0"
+description = "双履 Twin Treads —— 双人同屏坦克对战（本地 Python + pygame）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Twin Treads" }]
+keywords = ["pygame", "tank", "game", "local-multiplayer"]
+dependencies = ["pygame>=2.5,<3"]
+
+# 说明：本项目是单文件游戏 + PyInstaller 打包（见 packaging/windows/tank_game.spec），
+# 故意不声明 [build-system]，避免与既有的 PyInstaller 打包路径冲突。
+# 这里只提供项目元数据与工具配置。
+
+[tool.pytest.ini_options]
+# 自测脚本多为「顶层断言 + import 副作用」，且部分（如 _selftest_font.py）
+# 必须只在 __main__ 下运行，不适合被 pytest 直接收集。
+# 统一通过 run_selftests.py 以子进程方式运行，见 README「开发」小节。
+testpaths = ["."]
+python_files = ["_selftest*.py"]
+
+[tool.run_selftests]
+# run_selftests.py 的默认解释器提示；实际以运行 run_selftests.py 的解释器为准。
+# 需要已安装 pygame>=2.5,<3。

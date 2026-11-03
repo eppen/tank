@@ -337,6 +337,34 @@ python3.11 tank_game.py --1p --ai=normal   # 或 --ai=easy / --ai=hard，游戏�
 - **被掩体挡下的子弹算 miss**：评估只认「有没有打到坦克」，隔墙打出去（或擦着方块被打掉）的子弹不计命中，所以对着掩体乱打的局准度分会偏低——这跟「废弹」口径是一致的。
 - 评估不评判「没开火但走位好」这类无法量化的事，也不给操作手感打分。
 
+## 开发：一键跑全部自测
+
+仓库里的 `_selftest*.py` / `_preview.py` / `_sim_coach.py` 是开发态自测脚本（打包时已被 `packaging/windows/tank_game.spec` 排除）。它们大多是「顶层断言 + import 副作用」，且 `tank_game` 在 import 时就开窗口，所以**统一用子进程跑**，并自动注入 `SDL_VIDEODRIVER=dummy` / `SDL_AUDIODRIVER=dummy`。
+
+```bash
+# 1) 装依赖（pygame>=2.5,<3，与 packaging/windows/requirements-build.txt 对齐）
+pip install -r requirements.txt
+
+# 2) 一键跑全部自测（末尾打印「通过 N / 失败 M」，任一失败退出码非 0）
+python run_selftests.py
+
+# 列出全部脚本与说明（不执行）
+python run_selftests.py --list
+
+# 跳过耗时较长的 AI / coach 回归（_selftest_ai / _sim_coach / _selftest_coach）
+python run_selftests.py --quick
+
+# 只跑指定脚本
+python run_selftests.py _selftest_body.py _selftest_walls.py
+```
+
+说明：
+
+- **解释器**：本机用 `python3.11`（README 各处示例的版本）。`run_selftests.py` 用「运行它的那个解释器」去跑子进程，所以 `python3.11 run_selftests.py` 即可。
+- **为什么用子进程**：`_selftest_font.py` 必须只在 `__main__` 下运行（子进程 `import` 它会无限递归），且各脚本靠 import 副作用执行断言，子进程隔离是唯一安全方式。
+- **CI**：`.github/workflows/ci.yml` 在 ubuntu / macos / windows × Python 3.11 / 3.13 矩阵上跑 `python run_selftests.py`。跨三平台是为了覆盖 `tank_paths.py` 的 `LOCALAPPDATA` / `~/.local/share` 分支与 `tank_game.py` 的三平台字体候选路径。
+- **单个脚本手动跑**：仍可按各脚本 docstring 里的命令单独跑，例如 `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_ai.py`。
+
 ## Microsoft Store / Windows 打包
 
 可以上架 Microsoft Store，但不能直接提交 `.py`。路径：
