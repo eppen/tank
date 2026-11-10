@@ -7,7 +7,8 @@
 4. 贴墙不越界：两台 AI 对轰 3000 帧，坐标始终在场地内；
 5. 目标阵亡后 AI 停车、不打空枪；
 6. 视角/输入隔离：_parse_mode 参数解析、set_skill 非法值兜底；
-7. main() 端到端跑 1p 模式：AI 自动开火、F3 切难度、F2 切回双人后 P2 键盘可用。
+7. main() 端到端跑 1p 模式：AI 自动开火、F3 切难度、F2 切回双人后 P2 键盘可用；
+8. 确定性回放：同种子 + 同输入跑三遍，位置/角度/血量/子弹快照逐位一致。
 
 运行：SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_ai.py
 """
@@ -259,6 +260,28 @@ def ai_main_scenario():
     assert human_p2, "F2 切回双人后，P2 的 ENTER 应该能开火"
     assert len(tanks_created) == 4, f"初始 2 + F2 重置 2 = 4，实际 {len(tanks_created)}"
     print("AI_MAIN OK：AI 自主开火 -> F3 切难度 -> F2 切双人 -> P2 键盘接管")
+
+
+# ---------------------------------------------------------- 8) 确定性回放
+def replay(seed):
+    """同种子 + 同输入跑固定帧数，返回可直接比较的状态快照。"""
+    tank = new_tank(g.RED, 180, 460, 0.0)
+    target = new_tank(g.BLUE, 620, 140, 180.0)
+    ai = g.TankAI("hard", seed=seed)
+    hits = []
+    bullets = sim(ai, tank, target, 240, hits=hits)
+    return (
+        round(tank.pos.x, 6), round(tank.pos.y, 6), round(tank.angle, 6),
+        tank.hp, target.hp, len(hits), ai.want_fire,
+        sorted((round(b.pos.x, 6), round(b.pos.y, 6)) for b in bullets),
+    )
+
+
+snap_a = replay(20261110)
+snap_b = replay(20261110)
+snap_c = replay(20261110)
+assert snap_a == snap_b == snap_c, (snap_a, snap_b, snap_c)
+print(f"[8] 确定性回放 OK：同种子 240 帧三次快照一致 {snap_a[:6]}")
 
 
 if "--ai-main" in sys.argv:

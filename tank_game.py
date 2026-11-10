@@ -32,8 +32,29 @@ except Exception:  # pragma: no cover - 没有 SDL2 controller 支持时降级�
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 FPS = 60
+LOGIC_STEP = 1.0 / FPS                        # 固定逻辑步长（秒）
+MAX_CATCHUP_STEPS = max(1, int(0.1 * FPS))    # 单帧最多补 0.1 秒
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Twin Treads 双履")
+
+
+def fixed_steps(elapsed, accumulator, step=LOGIC_STEP,
+                max_steps=MAX_CATCHUP_STEPS, tolerance=0.1):
+    """把实测帧间隔换算成固定逻辑步数，返回 (步数, 新累加器)。
+
+    正常 60fps 每帧 1 步；掉帧按 1/60 秒补步，单帧最多补 0.1 秒。
+    异常间隔（首帧、拖窗口、配置面板暂停造成的 <=0 或 >0.1 秒）按 1 步算，
+    免得一帧跳过几十度。tolerance 吸收时钟抖动，避免 59.9fps 时永久漏步。
+    """
+    if not 0.0 < elapsed <= 0.1:
+        elapsed = step
+    accumulator = min(accumulator + elapsed, step * max_steps)
+    steps = 0
+    threshold = step * (1.0 - tolerance)
+    while accumulator >= threshold and steps < max_steps:
+        accumulator -= step
+        steps += 1
+    return steps, accumulator
 
 
 # --- 字体：屏幕上要画中文，必须自己找一款带汉字字形的字体 ---
@@ -994,7 +1015,7 @@ class Tank(pygame.sprite.Sprite):
 
     # --- 移动 ---
     def drive(self, turn=0.0, move=0.0, dt=1.0 / FPS):
-        """模拟量输入通道：turn/move 为 -1..1，dt 为上一帧耗时（秒）。
+        """模拟量输入通道：turn/move 为 -1..1，dt 为本逻辑步时长（秒）。
 
         符号约定（见模块顶部 TURN_RIGHT / TURN_LEFT，唯一出处）：
         turn > 0 = 顺时针 = 画面右转 = 角度增大；turn < 0 = 画面左转。
@@ -1003,8 +1024,8 @@ class Tank(pygame.sprite.Sprite):
         turn_speed / speed 都是「每标准帧（1/60 秒）」的量，这里乘 dt × FPS
         折算成真实时间：
           - dt 默认 1/60 时与旧版逐位一致（所有自测脚本 / 试跑脚本都不传 dt）；
-          - main() 把 clock.tick() 实测的帧间隔传进来，掉帧（字体渲染、评估
-            面板）时转速与车速不再跟着变慢，手感不再随帧率漂移。
+          - main() 固定传 1/FPS：主循环用 fixed_steps() 补跑逻辑步，掉帧时
+            多跑几步，转速与车速不随帧率漂移，子弹/冷却也共用同一时间基准。
 
         障碍物：位置更新后先 resolve_obstacles() 把车体推出方块，再做屏幕边界
         夹取（顺序固定：先障碍物、后边界）。推出是沿最小穿透方向，所以斜着顶墙
@@ -2964,11 +2985,145 @@ def main():
         if apply_fire_key(slot, key):
             bind_state["slot"] = "menu"
 
+    def update_play(keys, menu_ate_fire, step_dt):
+        """推进一个固定逻辑步（1/FPS 秒）。
+
+        按帧计时的系统（冷却、复活、无敌、子弹、爆炸、AI 帧计数、教练统计）
+        全部随逻辑步推进；事件、菜单和手柄边沿仍按渲染帧处理，不参与补跑。
+        """
+        nonlocal winner, shake
+
+        for tank in (tank1, tank2):
+            tank.tick()
+            if winner is not None:
+                continue
+            if not tank.alive:
+                # 被击毁但还有命：复活倒计时走完就回出生点（同一台坦克对象）
+                if tank.respawn_timer > 0:
+                    tank.respawn_timer -= 1
+                    if tank.respawn_timer == 0:
+                        tank.respawn()
+                        tanks.add(tank)
+                        explosions.add(Explosion(tank.pos.x, tank.pos.y,
+                                                 tank.color, 40, 16))
+                        print(f"[life] {tank_label(tank)} 复活，"
+                              f"剩 {tank.lives} 条命（{SPAWN_INVULN} 帧无敌）")
+                continue
+            if tank.ai is not None:
+                # 电脑坦克：决策 -> 走同一条 drive() 通道（转向符号不变）
+                tank.ai.update(tank, tank1 if tank is tank2 else tank2)
+                tank.drive(tank.ai.turn(), tank.ai.move(), step_dt)
+                if tank.ai.want_fire:
+                    try_fire(tank)
+            else:
+                # 键盘 + 手柄合成，无手柄时 = handle_input
+                tank.poll_controls(keys, step_dt)
+                if (tank.pad is not None and tank.pad.fire_edge()
+                        and not menu_ate_fire):
+                    try_fire(tank)
+                if coach is not None and tank is tank1:
+                    # 开火键是否还按着：判断「按住不放」这种最常见的误用
+                    try:
+                        held = bool(keys[tank.controls["fire"]])
+                    except (KeyError, IndexError):
+                        held = False
+                    held = held or (tank.pad is not None and tank.pad.fire_held())
+                    coach.observe(tank, tank2, held)
+                    hint = coach.new_hint()
+                    if hint:
+                        toast["text"] = "COACH: " + hint[1]
+                        toast["frames"] = 150
+                        print(f"[coach] 即时提示：{hint[1]}")
+
+        # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
+        # 位置很关键——早于两车更新会被下一次 drive 盖掉，晚于命中判定则
+        # 子弹已经按旧位置判过命中。一局结束后（winner 已定）不再推挤，
+        # 免得把「尸体」顶走。
+        if winner is None:
+            separate_tanks(tank1, tank2)
+
+        bullets.update()
+        explosions.update()
+
+        # 子弹 × 障碍物：先撞墙，再看坦克（同一帧不允许穿墙命中）
+        if walls:
+            for bullet in bullets.sprites():
+                if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
+                    explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
+                                             GRAY, 14, 10))
+                    bullet.kill()
+
+        # 子弹命中判定
+        for bullet in bullets.sprites():
+            for tank in (tank1, tank2):
+                if tank is bullet.owner or not tank.alive:
+                    continue
+                if bullet.touches(tank):
+                    hit_point = pygame.Vector2(bullet.pos)
+                    bullet.kill()
+                    explosions.add(Explosion(hit_point.x, hit_point.y,
+                                             YELLOW, 26, 14))
+                    shake = max(shake, 5.0)
+                    shielded = tank.invuln > 0    # 复活无敌：这一发不掉血
+                    owner_s = round_stats[side_key(bullet.owner)]
+                    if shielded:
+                        owner_s["shield_hits"] += 1
+                    else:
+                        owner_s["hits"] += 1
+                    if coach is not None:
+                        coach.on_hit(by_human=(bullet.owner is tank1),
+                                     shield=shielded, bullet=bullet)
+                    if tank.take_hit(DAMAGE):
+                        if tank.pad is not None:
+                            tank.pad.rumble(PAD_RUMBLE_MS, 0.8)
+                        explosions.add(Explosion(tank.pos.x, tank.pos.y,
+                                                 tank.color, 72, 28))
+                        shake = max(shake, 15.0)
+                        tank.kill()  # 移出精灵组，不再绘制
+                        owner_s["kills"] += 1
+                        round_stats[side_key(tank)]["deaths"] += 1
+                        if coach is not None:
+                            coach.on_death(victim_is_human=(tank is tank1))
+                        if tank.lose_life():
+                            point, angle = safe_respawn_point(
+                                tank1 if tank is tank2 else tank2,
+                                tank.respawn_point)
+                            tank.respawn_point = point
+                            tank.respawn_angle = angle
+                            print(f"[life] {tank_label(tank)} 被击毁，"
+                                  f"剩 {tank.lives} 条命，"
+                                  f"{RESPAWN_DELAY / FPS:.1f} 秒后复活")
+                        elif mode == "1p":
+                            winner = ("YOU WIN!" if tank is tank2
+                                      else "CPU WINS!")
+                            print(f"[life] {tank_label(tank)} 命已用尽，"
+                                  f"本局结束")
+                            finish_round(won=(tank is tank2))
+                        else:
+                            winner = ("P1 (red) wins!" if tank is tank2
+                                      else "P2 (blue) wins!")
+                            print(f"[life] {tank_label(tank)} 命已用尽，"
+                                  f"本局结束")
+                            capture_casualties()
+                            record_career_game(won=(tank is tank2))
+                            reset_post_menu()
+                    break
+
+        shake = max(0.0, shake - 0.9)
+        if toast["frames"] > 0:
+            toast["frames"] -= 1
+
     running = True
     clock = pygame.time.Clock()
-    dt = 1.0 / FPS          # 上一帧耗时（秒）；每帧末尾用 clock.tick() 实测刷新
+    accumulator = 0.0
+    logic_step = LOGIC_STEP   # 逻辑固定 60Hz；渲染跟随显示器刷新
 
     while running:
+        # 固定步长累加器：正常帧跑 1 步；掉帧时本帧补跑多步，让子弹、冷却、
+        # 复活计时与车体移动共用同一个时间基准。异常间隔按 1 步算。
+        elapsed = clock.tick(FPS) / 1000.0
+        steps, accumulator = fixed_steps(elapsed, accumulator)
+
         # --- 事件 ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -3196,126 +3351,12 @@ def main():
                 if toast["frames"] > 0:
                     toast["frames"] -= 1
             elif not paused_play:
-                # 对战更新（本帧刚开暂停则上面分支已挡住）
-                for tank in (tank1, tank2):
-                    tank.tick()
+                # 固定逻辑步：正常 60fps 每帧 1 步；掉帧时本帧补跑多步。
+                # 事件 / 菜单 / 手柄边沿仍按渲染帧处理，不参与补跑。
+                for _ in range(steps):
                     if winner is not None:
-                        continue
-                    if not tank.alive:
-                        # 被击毁但还有命：复活倒计时走完就回出生点（同一台坦克对象）
-                        if tank.respawn_timer > 0:
-                            tank.respawn_timer -= 1
-                            if tank.respawn_timer == 0:
-                                tank.respawn()
-                                tanks.add(tank)
-                                explosions.add(Explosion(tank.pos.x, tank.pos.y,
-                                                         tank.color, 40, 16))
-                                print(f"[life] {tank_label(tank)} 复活，"
-                                      f"剩 {tank.lives} 条命（{SPAWN_INVULN} 帧无敌）")
-                        continue
-                    if tank.ai is not None:
-                        # 电脑坦克：决策 -> 走同一条 drive() 通道（转向符号不变）
-                        tank.ai.update(tank, tank1 if tank is tank2 else tank2)
-                        tank.drive(tank.ai.turn(), tank.ai.move(), dt)
-                        if tank.ai.want_fire:
-                            try_fire(tank)
-                    else:
-                        # 键盘 + 手柄合成，无手柄时 = handle_input
-                        tank.poll_controls(keys, dt)
-                        if (tank.pad is not None and tank.pad.fire_edge()
-                                and not menu_ate_fire):
-                            try_fire(tank)
-                        if coach is not None and tank is tank1:
-                            # 开火键是否还按着：判断「按住不放」这种最常见的误用
-                            try:
-                                held = bool(keys[tank.controls["fire"]])
-                            except (KeyError, IndexError):
-                                held = False
-                            held = held or (tank.pad is not None and tank.pad.fire_held())
-                            coach.observe(tank, tank2, held)
-                            hint = coach.new_hint()
-                            if hint:
-                                toast["text"] = "COACH: " + hint[1]
-                                toast["frames"] = 150
-                                print(f"[coach] 即时提示：{hint[1]}")
-
-                # 帧末分离：两台车都动完之后、命中判定之前，按「各让一半」分开。
-                # 位置很关键——早于两车更新会被下一次 drive 盖掉，晚于命中判定则
-                # 子弹已经按旧位置判过命中。一局结束后（winner 已定）不再推挤，
-                # 免得把「尸体」顶走。
-                if winner is None:
-                    separate_tanks(tank1, tank2)
-
-                bullets.update()
-                explosions.update()
-
-                # 子弹 × 障碍物：先撞墙，再看坦克（同一帧不允许穿墙命中）
-                if walls:
-                    for bullet in bullets.sprites():
-                        if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
-                            explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
-                                                     GRAY, 14, 10))
-                            bullet.kill()
-
-                # 子弹命中判定
-                for bullet in bullets.sprites():
-                    for tank in (tank1, tank2):
-                        if tank is bullet.owner or not tank.alive:
-                            continue
-                        if bullet.touches(tank):
-                            hit_point = pygame.Vector2(bullet.pos)
-                            bullet.kill()
-                            explosions.add(Explosion(hit_point.x, hit_point.y,
-                                                     YELLOW, 26, 14))
-                            shake = max(shake, 5.0)
-                            shielded = tank.invuln > 0    # 复活无敌：这一发不掉血
-                            owner_s = round_stats[side_key(bullet.owner)]
-                            if shielded:
-                                owner_s["shield_hits"] += 1
-                            else:
-                                owner_s["hits"] += 1
-                            if coach is not None:
-                                coach.on_hit(by_human=(bullet.owner is tank1),
-                                             shield=shielded, bullet=bullet)
-                            if tank.take_hit(DAMAGE):
-                                if tank.pad is not None:
-                                    tank.pad.rumble(PAD_RUMBLE_MS, 0.8)
-                                explosions.add(Explosion(tank.pos.x, tank.pos.y,
-                                                         tank.color, 72, 28))
-                                shake = max(shake, 15.0)
-                                tank.kill()  # 移出精灵组，不再绘制
-                                owner_s["kills"] += 1
-                                round_stats[side_key(tank)]["deaths"] += 1
-                                if coach is not None:
-                                    coach.on_death(victim_is_human=(tank is tank1))
-                                if tank.lose_life():
-                                    point, angle = safe_respawn_point(
-                                        tank1 if tank is tank2 else tank2,
-                                        tank.respawn_point)
-                                    tank.respawn_point = point
-                                    tank.respawn_angle = angle
-                                    print(f"[life] {tank_label(tank)} 被击毁，"
-                                          f"剩 {tank.lives} 条命，"
-                                          f"{RESPAWN_DELAY / FPS:.1f} 秒后复活")
-                                elif mode == "1p":
-                                    winner = ("YOU WIN!" if tank is tank2
-                                              else "CPU WINS!")
-                                    print(f"[life] {tank_label(tank)} 命已用尽，"
-                                          f"本局结束")
-                                    finish_round(won=(tank is tank2))
-                                else:
-                                    winner = ("P1 (red) wins!" if tank is tank2
-                                              else "P2 (blue) wins!")
-                                    print(f"[life] {tank_label(tank)} 命已用尽，"
-                                          f"本局结束")
-                                    capture_casualties()
-                                    record_career_game(won=(tank is tank2))
-                                    reset_post_menu()
-                            break
-
-                shake = max(0.0, shake - 0.9)
-                if toast["frames"] > 0:
-                    toast["frames"] -= 1
+                        break
+                    update_play(keys, menu_ate_fire, logic_step)
 
         for tank in (tank1, tank2):
             tank.sync_image()
@@ -3566,11 +3607,6 @@ def main():
             screen.blit(tip, tip.get_rect(center=(SCREEN_WIDTH // 2, 74)))
 
         pygame.display.flip()
-        # 实测帧间隔：掉帧（字体渲染 / F5 面板）时转向与车速保持真实时间一致。
-        # 首帧、拖窗口、配置面板暂停造成的异常间隔（<=0 或 >0.1s）按标准帧算，
-        # 免得一帧跳过几十度。
-        elapsed = clock.tick(FPS) / 1000.0
-        dt = elapsed if 0.0 < elapsed <= 0.1 else 1.0 / FPS
 
     for pad in pads:
         pad.close()

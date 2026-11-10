@@ -1,6 +1,6 @@
 # 双履 Twin Treads（tank_game）
 
-文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_version.py`（版本号唯一来源）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
+文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_version.py`（版本号唯一来源）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥、`_selftest_timing.py` 专测固定逻辑步累加器）、`_sim_coach.py`（评估的交叉验证沙盘）。
 
 **下文所有命令都在本目录（`tank/`）下执行**，例如 `cd tank && python3.11 tank_game.py`。
 
@@ -182,7 +182,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 - **为什么以前总是对不上敌人**：旧版键盘只有 ±1 两档，所以每一步都走 4°，可达角度是「起点 + 4k°」的格点；而敌人方向是 `atan2` 算出来的连续实数，跟最近格点**必然差最多 2.0°、平均 1°**，数学上永远等于不了。更糟的是人手一次轻敲通常持续 3~6 帧（12~24°），过冲之后只能反向过冲，炮口就在目标两侧来回摆。
 - **差 1~4° 到底有多大**：子弹从炮口直线飞，角度误差 e 在距离 d 上横向偏 `d·tan(e)`，命中半径只有 22px。所以 400px 处：1° 偏 7px（中）、2° 偏 14px（中）、3° 偏 21px（擦边中）、**4° 偏 28px（打空）**。也就是说「多按一帧」就白打一枪——不是感觉问题，是几何问题。
 - **现在的做法（`read_keyboard_axes()`）**：键盘起手一帧只给 `TURN_FINE_GAIN = 0.25` 的增益（= 1°/帧），同向按住 `TURN_RAMP_FRAMES = 8` 帧（约 0.13 秒）后线性升到满舵。点一下走 1°、可以一格一格把炮口停在任意角度上；按住不放仍然 240°/s，甩炮口不吃亏。手柄摇杆本来就是连续量，不走这条加速曲线。
-- **和帧率无关**：`turn_speed` / `speed` 都是「每标准帧」的量，`drive(turn, move, dt)` 用主循环 `clock.tick()` 实测的帧间隔折算成真实时间（`dt` 默认 1/60，自测脚本不传时行为与旧版逐位一致），掉帧不再让转速变慢。
+- **和帧率无关**：主循环用固定 60Hz 逻辑步（`fixed_steps()` 累加器），正常帧跑 1 步、掉帧时本帧补跑多步（单帧最多补 0.1 秒）；`turn_speed` / `speed` 都是「每标准帧」的量，`drive(turn, move, dt)` 收到的 `dt` 恒为 1/60（自测脚本不传时同样），转速/车速与子弹、冷却、复活共用同一个时间基准。
 - **数值都有自测兜着**：`_selftest_turn.py` 验证「4° 格点残差 2.0° → 点按后残差 ≤0.5°」「过冲一帧在 400px 上打空」「30fps 与 60fps 转过的角度差 <10%」「满舵仍是 4°/帧」。
 
 ### 已知限制
