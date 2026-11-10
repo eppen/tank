@@ -7,12 +7,15 @@ import time
 
 import pygame
 
+import tank_audio
 import tank_career
 import tank_coach
 import tank_paths
 import tank_version
 
 # --- 初始化设置 ---
+# 音效必须在 pygame.init() 之前定好混音格式，否则 mixer 会按默认值先初始化。
+tank_audio.pre_init()
 pygame.init()
 try:
     pygame.joystick.init()
@@ -479,9 +482,10 @@ PAD_RAW_TRIGGER_AXES = _env_int_tuple("TANK_PAD_RAW_TRIGGERS", ())
 FIRE_KEY_DEFAULTS = {"p1": "space", "p2": "return"}
 FIRE_SLOTS = ("p1", "p2")
 KEYS_CONFIG_PATH = tank_paths.data_file("tank_keys.json", "TANK_KEYS_FILE")
-# ESC/P 暂停、F2/F3 切模式与难度、F4 开配置、F5 评估、M 切地图，都不允许被抢作开火键
+# ESC/P 暂停、F2/F3 切模式与难度、F4 开配置、F5 评估、F6 静音、M 切地图，
+# 都不允许被抢作开火键
 RESERVED_KEY_NAMES = frozenset(
-    {"escape", "esc", "p", "f1", "f2", "f3", "f4", "f5", "m"})
+    {"escape", "esc", "p", "f1", "f2", "f3", "f4", "f5", "f6", "m"})
 PAD_BUTTON_MAX = getattr(pygame, "CONTROLLER_BUTTON_MAX", 11)
 PAD_BUTTON_LABELS = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "BACK", 5: "GUIDE",
                      6: "START", 7: "LSTICK", 8: "RSTICK", 9: "LB", 10: "RB",
@@ -530,8 +534,8 @@ def check_fire_key(name, other_name=None, ascii_only=False):
         return None, msg(f"无法识别的按键 {name!r}", f"unknown key {name!r}")
     norm = key_code_to_name(code)
     if norm in RESERVED_KEY_NAMES:
-        return None, msg(f"{norm.upper()} 是系统保留键（ESC / F2-F5 / M）",
-                         f"{norm.upper()} is reserved (ESC / F2-F5 / M)")
+        return None, msg(f"{norm.upper()} 是系统保留键（ESC / F2-F6 / M）",
+                         f"{norm.upper()} is reserved (ESC / F2-F6 / M)")
     if other_name:
         other_code = key_name_to_code(other_name)
         if other_code is not None and other_code == code:
@@ -2220,6 +2224,9 @@ def main():
             print(tank_coach.history_text(hist))
         return
     mode, ai_skill = _parse_mode()
+    # 音效：没有声卡 / dummy 驱动时只静音，不影响启动与对战
+    tank_audio.init()
+    print(f"[audio] {tank_audio.describe()}")
     # 攻击键配置：启动即读（读不到/写坏都回退默认），手柄开火按钮也一起生效
     fire_codes, fire_names, pad_fire_cfg = load_fire_config()
     if pad_fire_cfg:
@@ -2436,6 +2443,7 @@ def main():
         bullets.add(bullet)
         muzzle = tank.muzzle_position()
         explosions.add(Explosion(muzzle.x, muzzle.y, YELLOW, 16, 7))
+        tank_audio.play("fire", pan=tank_audio.pan_for_x(tank.pos.x, SCREEN_WIDTH))
         round_stats[side_key(tank)]["shots"] += 1
         if coach is not None:
             if tank is tank1:
@@ -2520,6 +2528,7 @@ def main():
         if post_view != "menu":
             return
         post_menu_index = (post_menu_index + delta) % POST_MENU_COUNT
+        tank_audio.play("move")
 
     def post_menu_confirm(index=None):
         """确认当前（或指定）菜单项；灰显则 toast 原因。"""
@@ -2537,6 +2546,7 @@ def main():
                           if tank_coach.ASCII_ONLY else
                           "切难度仅单人模式可用")
             return False
+        tank_audio.play("select")
         if index == POST_MENU_REMATCH:
             rematch()
             return True
@@ -2559,11 +2569,13 @@ def main():
         if main_view != "menu":
             return
         main_menu_index = (main_menu_index + delta) % MAIN_MENU_COUNT
+        tank_audio.play("move")
 
     def close_career_view():
         """战绩面板 → 回主菜单列表。"""
         nonlocal main_view
         main_view = "menu"
+        tank_audio.play("select")
         return True
 
     def open_career_view():
@@ -2582,6 +2594,7 @@ def main():
         if index is None:
             index = main_menu_index
         index = int(index) % MAIN_MENU_COUNT
+        tank_audio.play("select")
         if index == MAIN_MENU_1P:
             enter_mode_from_menu("1p")
             return True
@@ -2634,6 +2647,7 @@ def main():
         paused_play = True
         pause_menu_index = PAUSE_MENU_RESUME
         pause_nav["prev"] = 0
+        tank_audio.play("select", gain=0.7)
         print("[pause] 暂停")
         return True
 
@@ -2656,6 +2670,7 @@ def main():
         if not paused_play:
             return
         pause_menu_index = (pause_menu_index + delta) % PAUSE_MENU_COUNT
+        tank_audio.play("move")
 
     def pause_menu_confirm(index=None):
         """暂停菜单：继续 / 回主菜单 / 退出游戏。"""
@@ -2663,6 +2678,7 @@ def main():
         if index is None:
             index = pause_menu_index
         index = int(index) % PAUSE_MENU_COUNT
+        tank_audio.play("select")
         if index == PAUSE_MENU_RESUME:
             close_pause_menu()
             return True
@@ -2811,6 +2827,24 @@ def main():
         """屏幕中央短提示（模式/难度/教练共用）。"""
         toast["text"], toast["frames"] = text, frames
 
+    def toggle_audio():
+        """F6：音效开/静音（只影响本次运行，不写配置文件）。"""
+        if not tank_audio.enabled():
+            set_toast("Sound off (TANK_SOUND=0)" if tank_coach.ASCII_ONLY
+                      else "音效已在启动时关闭（TANK_SOUND=0）")
+            return True
+        if not tank_audio.available():
+            set_toast("No audio device" if tank_coach.ASCII_ONLY
+                      else "没有可用音频设备，无法开启音效")
+            return True
+        is_muted = tank_audio.toggle_mute()
+        if tank_coach.ASCII_ONLY:
+            set_toast("Sound OFF (F6)" if is_muted else "Sound ON (F6)")
+        else:
+            set_toast("音效已关闭（F6 恢复）" if is_muted else "音效已开启")
+        print(f"[audio] {'静音' if is_muted else '恢复音效'}（F6）")
+        return is_muted
+
     def apply_map():
         """按 map_index 重建掩体，并挂到当前两台坦克上。"""
         nonlocal obstacles, walls, tank1, tank2
@@ -2944,6 +2978,7 @@ def main():
             # 从确认开打起算本局评估，不含等待帧
             coach.begin_round(AI_SKILLS[ai_skill]["label"])
         print("[mode] 开打")
+        tank_audio.play("start")
         set_toast("Fight!" if tank_coach.ASCII_ONLY else "开始！")
         return True
 
@@ -2958,6 +2993,7 @@ def main():
         paused_play = False
         awaiting_start = False
         phase = "play"
+        tank_audio.play("start")
         set_toast("Rematch" if tank_coach.ASCII_ONLY else "再来一局")
         return True
 
@@ -3006,6 +3042,9 @@ def main():
                         tanks.add(tank)
                         explosions.add(Explosion(tank.pos.x, tank.pos.y,
                                                  tank.color, 40, 16))
+                        tank_audio.play("respawn",
+                                        pan=tank_audio.pan_for_x(tank.pos.x,
+                                                                 SCREEN_WIDTH))
                         print(f"[life] {tank_label(tank)} 复活，"
                               f"剩 {tank.lives} 条命（{SPAWN_INVULN} 帧无敌）")
                 continue
@@ -3051,6 +3090,9 @@ def main():
                 if obstacle_at(bullet.pos, walls, BULLET_RADIUS):
                     explosions.add(Explosion(bullet.pos.x, bullet.pos.y,
                                              GRAY, 14, 10))
+                    tank_audio.play("wall", gain=0.8,
+                                    pan=tank_audio.pan_for_x(bullet.pos.x,
+                                                             SCREEN_WIDTH))
                     bullet.kill()
 
         # 子弹命中判定
@@ -3065,6 +3107,9 @@ def main():
                                              YELLOW, 26, 14))
                     shake = max(shake, 5.0)
                     shielded = tank.invuln > 0    # 复活无敌：这一发不掉血
+                    tank_audio.play("shield" if shielded else "hit",
+                                    pan=tank_audio.pan_for_x(hit_point.x,
+                                                             SCREEN_WIDTH))
                     owner_s = round_stats[side_key(bullet.owner)]
                     if shielded:
                         owner_s["shield_hits"] += 1
@@ -3078,6 +3123,9 @@ def main():
                             tank.pad.rumble(PAD_RUMBLE_MS, 0.8)
                         explosions.add(Explosion(tank.pos.x, tank.pos.y,
                                                  tank.color, 72, 28))
+                        tank_audio.play("explode",
+                                        pan=tank_audio.pan_for_x(tank.pos.x,
+                                                                 SCREEN_WIDTH))
                         shake = max(shake, 15.0)
                         tank.kill()  # 移出精灵组，不再绘制
                         owner_s["kills"] += 1
@@ -3099,6 +3147,7 @@ def main():
                             print(f"[life] {tank_label(tank)} 命已用尽，"
                                   f"本局结束")
                             finish_round(won=(tank is tank2))
+                            tank_audio.play("win" if tank is tank2 else "lose")
                         else:
                             winner = ("P1 (red) wins!" if tank is tank2
                                       else "P2 (blue) wins!")
@@ -3107,6 +3156,7 @@ def main():
                             capture_casualties()
                             record_career_game(won=(tank is tank2))
                             reset_post_menu()
+                            tank_audio.play("win")
                     break
 
         shake = max(0.0, shake - 0.9)
@@ -3180,6 +3230,8 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if bind_state["slot"] is not None:
                     handle_config_key(event.key, bind_state["slot"])
+                elif event.key == pygame.K_F6:
+                    toggle_audio()
                 elif phase == "main":
                     if main_view == "career":
                         if event.key in (pygame.K_ESCAPE, pygame.K_b,
@@ -3408,9 +3460,10 @@ def main():
 
         # 模式提示（键盘 F2/F3；有手柄时另见底栏 Back / R-stick）
         mode_text = (f"Mode: 1P vs CPU - F2 switch, F3 AI "
-                     f"({AI_SKILLS[ai_skill]['label']}), P/Esc pause, F4/F5"
+                     f"({AI_SKILLS[ai_skill]['label']}), P/Esc pause, "
+                     "F4/F5/F6"
                      if mode == "1p" else
-                     "Mode: 2P duel - F2 vs CPU, P/Esc pause, F4 fire keys")
+                     "Mode: 2P duel - F2 vs CPU, P/Esc pause, F4/F6")
         mode_hint = small_font.render(mode_text, True, GRAY)
         screen.blit(mode_hint, mode_hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                          SCREEN_HEIGHT - 38)))

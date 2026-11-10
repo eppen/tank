@@ -1,8 +1,15 @@
 # 双履 Twin Treads（tank_game）
 
-文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_version.py`（版本号唯一来源）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥、`_selftest_timing.py` 专测固定逻辑步累加器）、`_sim_coach.py`（评估的交叉验证沙盘）。
+文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_audio.py`（程序化音效：开火 / 命中 / 爆炸 / 复活 / 胜负 / 菜单，无外部素材）、`tank_version.py`（版本号唯一来源）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥、`_selftest_timing.py` 专测固定逻辑步累加器、`_selftest_audio.py` 专测音效合成与静音降级）、`_sim_coach.py`（评估的交叉验证沙盘）。
 
 **下文所有命令都在本目录（`tank/`）下执行**，例如 `cd tank && python3.11 tank_game.py`。
+
+## 音效
+
+- 开火、子弹命中车体 / 墙壁、坦克被击毁、复活、开打、胜负、菜单移动 / 确认都有音效；双人同屏时按弹着点在屏幕上的位置做轻微左右声像。
+- **F6** 随时静音 / 恢复（屏幕中央有提示）。启动日志会打印 `[audio] 音效已启用：11 种…`；没有声卡 / 音频驱动不可用时打印静音提示，游戏照常运行。
+- 音色由 `tank_audio.py` 用正弦波、方波和噪声**现场合成**，不读取任何音频文件，打包不需要额外素材；想改音色直接改该模块里的 `_make_*` 函数。
+- 环境变量：`TANK_SOUND=0` 启动即关闭音效；`TANK_SOUND_VOLUME=0.4` 调主音量（0–1，默认 0.75）。
 
 启动默认进入**主菜单**：单人 / 双人 / AI 难度 / 地图 / **战绩** / 改开火键 / 退出。选模式后进入等待开始，再确认开打。局末「回主菜单」返回此处（不关游戏）。脚本自测可用 `TANK_SKIP_MENU=1` 或 `--1p`/`--2p` 跳过主菜单。
 
@@ -138,6 +145,8 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | `TANK_COACH_FILE=...` | 评估历史文件位置（默认见「数据目录」） | `TANK_COACH_FILE=/tmp/c.json` |
 | `TANK_CAREER_FILE=...` | 生涯战绩文件位置（默认见「数据目录」） | `TANK_CAREER_FILE=/tmp/career.json` |
 | `TANK_WALLS=0` | 关掉场地里的全部掩体方块（排查「是不是墙导致的」问题时用） | `TANK_WALLS=0 python3.11 tank_game.py` |
+| `TANK_SOUND=0` | 关闭全部音效（游戏中也可按 **F6** 静音） | `TANK_SOUND=0 python3.11 tank_game.py` |
+| `TANK_SOUND_VOLUME` | 主音量 0–1（默认 0.75） | `TANK_SOUND_VOLUME=0.4 python3.11 tank_game.py` |
 
 **数据目录**：开发态默认写在脚本同目录；PyInstaller / MSIX 打包后写 `%LOCALAPPDATA%\TankGame\`（安装目录只读）。单文件环境变量仍可覆盖。自测：`python3.11 _selftest_paths.py`。
 
@@ -161,7 +170,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 | 确认开打（切模式后） | START（**+**），或 R / 任意开火键 | R / 开火 | 同左 |
 | 切地图（仅等待开始） | **RB 按住再按 Y** | M | 同左 |
 | 循环 AI 难度 | 左/右摇杆按下，或 **LB 按住再按 X** | F3 | 同左 |
-| 改键 / 切评估面板 | —（仍用键盘） | F4 / F5 | 同左 |
+| 改键 / 切评估面板 / 静音 | —（仍用键盘） | F4 / F5 / F6 | 同左 |
 
 8BitDo Ultimate 3mode Xbox：**Start = 机身顶栏靠右的 `+`（Plus/Menu）**，**Back = 顶栏靠左的 `-`（Minus/View）**。macOS 蓝牙若 `+` 无响应，局末菜单改按人脸键 **Y** 确认。切 1P/2P 后不会立刻开打；等待界面可切地图，再按 Start(+)/R/开火开打。
 
@@ -172,7 +181,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 - 对局中 **P / Esc / 手柄 X** 打开暂停菜单（继续 / 回主菜单 / 退出游戏）；对战时 Esc 不再直接关窗口。主菜单、等待开打、局末、F4 配置里 Esc 保持原语义。再按 P/Esc/X 或选「继续」恢复；**LB+X** 仍只切难度、不进暂停。窗口失焦（Alt-Tab / 最小化）会自动暂停，避免切出去后 AI 继续开枪。
 - 子菜单（战绩、局末战报、F4 改键、暂停）退出统一用手柄 **X**（兼 Back）；列表菜单确认仍是 Start(+)/Y。
 - 改键：按 **F4** → `1`/`2` 改键盘 P1/P2（按一下新键），`3` 改手柄（按一下手柄按钮；绑定时按 X 取消），`0` 恢复默认（SPACE / ENTER / A·B·Y+肩键，不含 X）。改完立刻原子写入 `tank_keys.json`，下次启动自动读回；配置读坏或键名非法会退回默认并打印原因，不会开不了游戏。ESC、F4 或手柄 X 关闭面板，面板打开时对战暂停。
-- ESC、P、F1–F5、M 是保留键，不能被绑成开火键。
+- ESC、P、F1–F6、M 是保留键，不能被绑成开火键。
 
 - 手柄的背部拨片（8BitDo 猎户座 XPro、Xbox Elite）在标准通道下是语义按钮 16–20，HUD 里显示 `PADDLE1` 等，可直接在 F4 面板里绑定；猎户座 XPro 的拨片也可以先用 8BitDo 官方软件映射成任意键再用。
 
