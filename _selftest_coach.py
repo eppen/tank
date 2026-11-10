@@ -36,6 +36,7 @@ import pygame
 
 import tank_coach as c
 
+
 # --------------------------------------------------------------- 假坦克
 class FakeTank:
     """只有 coach 真正用到的属性：pos.x / pos.y / angle / alive / cooldown / invuln。"""

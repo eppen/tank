@@ -23,7 +23,7 @@ assert "p" in g.RESERVED_KEY_NAMES
 assert g.PAD_PAUSE_FACE == pygame.CONTROLLER_BUTTON_X
 assert pygame.CONTROLLER_BUTTON_X not in g.PAD_FIRE_DEFAULT_BUTTONS
 
-seen = {"pause": False, "resume": False, "texts": []}
+seen = {"pause": False, "resume": False, "focus": False, "texts": []}
 orig_print = builtins.print
 
 
@@ -33,6 +33,8 @@ def capturing_print(*args, **kwargs):
         seen["pause"] = True
     if "[pause] 继续" in line:
         seen["resume"] = True
+    if "[pause] 窗口失焦" in line:
+        seen["focus"] = True
     return orig_print(*args, **kwargs)
 
 
@@ -73,10 +75,15 @@ def fake_get():
     # 帧 15 再按 P 继续
     if i == 15:
         return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_p)]
-    # 帧 25 再暂停，帧 30 数字 3 退出游戏
+    # 帧 25 窗口失焦：应自动暂停；帧 35 再按 P 继续
     if i == 25:
+        return [pygame.event.Event(pygame.WINDOWFOCUSLOST)]
+    if i == 35:
+        return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_p)]
+    # 帧 45 Esc 再暂停，帧 50 数字 3 退出游戏
+    if i == 45:
         return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)]
-    if i == 30:
+    if i == 50:
         return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_3)]
     if i >= 80:
         return [pygame.event.Event(pygame.QUIT)]
@@ -95,7 +102,8 @@ finally:
 
 assert seen["pause"], "应按 P/Esc 进入暂停"
 assert seen["resume"], "应再按 P 继续"
+assert seen["focus"], "窗口失焦（WINDOWFOCUSLOST）应自动暂停"
 pause_titles = [t for _, t in seen["texts"]
                 if t in ("暂停", "PAUSED") or "继续" in t or "Resume" in t]
 assert pause_titles, f"应渲染暂停菜单：{seen['texts'][:40]}"
-print("PAUSE OK：P 暂停 → P 继续 → Esc 暂停 → 3 退出")
+print("PAUSE OK：P 暂停 → P 继续 → 失焦自动暂停 → P 继续 → Esc 暂停 → 3 退出")

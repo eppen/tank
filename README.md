@@ -1,6 +1,6 @@
 # 双履 Twin Treads（tank_game）
 
-文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
+文件：`tank_game.py`（游戏主体）、`tank_coach.py`（表现评估模块）、`tank_career.py`（生涯战绩）、`tank_version.py`（版本号唯一来源）、`tank_paths.py`（可写数据目录：开发态脚本旁 / 打包态 `%LOCALAPPDATA%\TankGame`）、`tank_keys.json`（开火键配置，可删，会自动重建）、`tank_coach.json`（对战评估历史，可删，会自动重建）、`tank_career.json`（生涯胜负与最近对局，可删，会自动重建）、`tank_preview.png`（预览截图）、`fonts/`（可选打包用 CJK 字体）、`packaging/windows/`（PyInstaller / MSIX / 商店上架）、`_selftest*.py` / `_preview.py`（自测与截图脚本，其中 `_selftest_lives.py` 专测生命值与复活、`_selftest_coach.py` 专测评估、`_selftest_career.py` 专测生涯战绩、`_selftest_paths.py` 专测数据目录、`_selftest_turn.py` 专测转向粒度与瞄准精度、`_selftest_walls.py` 专测障碍物、`_selftest_body.py` 专测两车车体互斥）、`_sim_coach.py`（评估的交叉验证沙盘）。
 
 **下文所有命令都在本目录（`tank/`）下执行**，例如 `cd tank && python3.11 tank_game.py`。
 
@@ -169,7 +169,7 @@ SDL_VIDEODRIVER=dummy python3.11 tank_game.py --pad-scan
 - 转向是**两段式**：起手一帧只转 1°，同向按住约 0.13 秒后升到满舵 4°/帧（240°/s）。所以「点一下转一格、按住甩炮口」，详见下文「转向：4°/帧 与点按微转」。
 - 屏幕左上/右上的 `HP 100  ANG 042  ERR  +1.5  DIST 412` 是血量 + 炮口角度 + 到对手的**瞄准残差**（度）+ 到对手的**实时距离**（px）：点按时盯着 ERR 收进 ±2° 再开火，就不会再出现「怎么都对不上」的感觉。`DIST` 是两车中心的欧氏距离，超过 **560px**（`AI_FIRE_RANGE`）打的子弹会先飞出屏幕、等于白送一次冷却——先靠近再开火。注意 F5 面板 / 局末报告里的 `DIST` 是**开火那一刻的平均距离**，跟这里随走位实时变化的数字不是一回事。
 - 胜负：一方 **5 条命全丢**才算输；中途被打掉命只是复活，不会结束这局。局末中央显示双方战损，并出现操作菜单：**再来一局 / 战报（仅 1P 有评估时）/ 切 1P↔2P / 切 AI 难度 / 回主菜单**；战报不自动弹出。手柄菜单用 **Start(+) 或 Y 确认**（A 不确认）；键盘可用 Enter/空格/数字键。局末「回主菜单」不关游戏；主菜单「退出」才结束。切模式后需再确认开打；macOS 蓝牙若 `+`/`-` 无响应，菜单用 **Y**，其它用 **LB+RB / LB+X** 和弦即可。
-- 对局中 **P / Esc / 手柄 X** 打开暂停菜单（继续 / 回主菜单 / 退出游戏）；对战时 Esc 不再直接关窗口。主菜单、等待开打、局末、F4 配置里 Esc 保持原语义。再按 P/Esc/X 或选「继续」恢复；**LB+X** 仍只切难度、不进暂停。
+- 对局中 **P / Esc / 手柄 X** 打开暂停菜单（继续 / 回主菜单 / 退出游戏）；对战时 Esc 不再直接关窗口。主菜单、等待开打、局末、F4 配置里 Esc 保持原语义。再按 P/Esc/X 或选「继续」恢复；**LB+X** 仍只切难度、不进暂停。窗口失焦（Alt-Tab / 最小化）会自动暂停，避免切出去后 AI 继续开枪。
 - 子菜单（战绩、局末战报、F4 改键、暂停）退出统一用手柄 **X**（兼 Back）；列表菜单确认仍是 Start(+)/Y。
 - 改键：按 **F4** → `1`/`2` 改键盘 P1/P2（按一下新键），`3` 改手柄（按一下手柄按钮；绑定时按 X 取消），`0` 恢复默认（SPACE / ENTER / A·B·Y+肩键，不含 X）。改完立刻原子写入 `tank_keys.json`，下次启动自动读回；配置读坏或键名非法会退回默认并打印原因，不会开不了游戏。ESC、F4 或手柄 X 关闭面板，面板打开时对战暂停。
 - ESC、P、F1–F5、M 是保留键，不能被绑成开火键。
@@ -362,7 +362,8 @@ python run_selftests.py _selftest_body.py _selftest_walls.py
 
 - **解释器**：本机用 `python3.11`（README 各处示例的版本）。`run_selftests.py` 用「运行它的那个解释器」去跑子进程，所以 `python3.11 run_selftests.py` 即可。
 - **为什么用子进程**：`_selftest_font.py` 必须只在 `__main__` 下运行（子进程 `import` 它会无限递归），且各脚本靠 import 副作用执行断言，子进程隔离是唯一安全方式。
-- **CI**：`.github/workflows/ci.yml` 在 ubuntu / macos / windows × Python 3.11 / 3.13 矩阵上跑 `python run_selftests.py`。跨三平台是为了覆盖 `tank_paths.py` 的 `LOCALAPPDATA` / `~/.local/share` 分支与 `tank_game.py` 的三平台字体候选路径。
+- **CI**：`.github/workflows/ci.yml` 在 ubuntu / macos / windows × Python 3.11 / 3.13 矩阵上跑 `python run_selftests.py`，并单独跑 `ruff check .`。跨三平台是为了覆盖 `tank_paths.py` 的 `LOCALAPPDATA` / `~/.local/share` 分支与 `tank_game.py` 的三平台字体候选路径。
+- **Lint**：`pip install -r requirements-dev.txt && ruff check .`（规则集见 `pyproject.toml` 的 `[tool.ruff]`，故意不启用格式检查）。
 - **单个脚本手动跑**：仍可按各脚本 docstring 里的命令单独跑，例如 `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3.11 _selftest_ai.py`。
 
 ## Microsoft Store / Windows 打包

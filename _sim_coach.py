@@ -22,8 +22,8 @@ os.environ["TANK_COACH_FILE"] = "/tmp/sim_coach_hist.json"
 
 import pygame
 
-import tank_game as g
 import tank_coach as c
+import tank_game as g
 
 pygame.init()
 

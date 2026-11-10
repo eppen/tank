@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """双履 Twin Treads —— 自测聚合入口。
 
 把仓库里所有 ``_selftest*.py`` / ``_preview.py`` / ``_sim_coach.py`` 用

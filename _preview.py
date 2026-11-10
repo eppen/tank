@@ -3,6 +3,7 @@ import os
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 import pygame
+
 import tank_game as g
 
 world = pygame.Surface((g.SCREEN_WIDTH, g.SCREEN_HEIGHT))

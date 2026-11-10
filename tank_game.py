@@ -10,6 +10,7 @@ import pygame
 import tank_career
 import tank_coach
 import tank_paths
+import tank_version
 
 # --- 初始化设置 ---
 pygame.init()
@@ -559,7 +560,7 @@ def load_fire_config(path=None):
     data = None
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as exc:
             print(f"[keys] {path} 读取失败（{exc}），用默认开火键")
@@ -1734,16 +1735,13 @@ class TankAI:
         # 玩家主动顶上来）：这一帧倒车让开，而不是继续压上去磨。瞄准和开火
         # 照常，所以「让开」不会变成「站着挨打」。
         pressed = dist <= 2 * TANK_HALF + 2
-        # 视线分两个口径，别混用：
-        #  · los（车心 → 目标）：只用来决定「要不要往前压」。「看不见人就压上」
-        #    必须用车心，否则车头顶着掩体、炮口插进方块里时判定会随瞄准角
-        #    一帧一变，AI 就在「站着瞄」和「转身绕」之间无限翻烙饼（实测原地
-        #    磨了 9000 帧，一枪没打出去）。
-        #  · can_shoot（炮口 → 目标，且炮口不能贴着方块）：只用来决定开不开枪。
-        #    炮口比车体半径还远 3px，顶着墙时它已经插进方块里了；子弹还有
-        #    4px 半径，炮口离墙面 2px 时子弹一出生就判撞墙（实测白打 600 多发）。
+        # 视线只认「炮口 → 目标」这一个口径（can_shoot），压上 / 绕墙 / 开火都用它。
+        # 不用「车心 → 目标」：车心视线可能通，子弹却一定撞方块角，AI 会站在
+        # 那儿「看着对方但一枪不开」；而且车头顶墙时车心判定会随瞄准角一帧一变，
+        # 会让 AI 在「站着瞄」和「转身绕」之间无限翻烙饼。
+        # 炮口比车体半径远 3px，顶着墙时已插进方块；子弹还有 4px 半径，炮口离
+        # 墙面 2px 时子弹一出生就撞墙，所以 can_shoot 还要检查炮口不贴方块。
         muzzle = tank.muzzle_position()
-        los = has_line_of_sight(tank.pos, target.pos, tank.obstacles)
         can_shoot = (has_line_of_sight(muzzle, target.pos, tank.obstacles)
                      and obstacle_at(muzzle, tank.obstacles,
                                      BULLET_RADIUS + 1) is None)
@@ -2187,6 +2185,7 @@ def _parse_mode():
 
 def main():
     args = [a.strip().lower() for a in sys.argv[1:]]
+    print(f"[info] Twin Treads 双履 v{tank_version.__version__}")
     if "--pad-scan" in args or os.environ.get("TANK_PAD_SCAN") == "1":
         print_pad_scan()      # 只诊断不游戏，排手柄问题用
         return
@@ -2982,6 +2981,12 @@ def main():
                 rebuild_pads()
                 bind_pads()
                 print(f"[pad] 已断开，剩余 {len(pads)} 只")
+            elif event.type == pygame.WINDOWFOCUSLOST:
+                # Alt-Tab / 最小化：对局自动暂停，避免切出去后 AI 继续开枪。
+                # 已在暂停 / 主菜单 / 等待开始 / 局末时不重复动作。
+                if not paused_play and can_pause_play():
+                    print("[pause] 窗口失焦，自动暂停")
+                    open_pause_menu()
             elif event.type in PAD_BUTTON_EVENTS and bind_state["slot"] == "pad":
                 # 配置面板的手柄槽位：按下哪个按钮就把它当开火键；X = 取消关闭
                 btn = getattr(event, "button", None)

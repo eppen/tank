@@ -5,6 +5,7 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 import pygame
+
 import tank_game as g
 
 print("pygame", pygame.version.ver)
@@ -152,7 +153,7 @@ print("[6c] 复活点 OK：挑最远角 + 朝向对手")
 
 # 7) 爆炸动画会按时消失
 ex = g.Explosion(300, 300, g.YELLOW, 40, 12)
-for i in range(13):
+for _ in range(13):
     ex.update()
 assert ex.alive() is False
 

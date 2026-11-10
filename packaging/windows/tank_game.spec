@@ -13,13 +13,17 @@ datas = []
 if os.path.isdir(fonts_dir):
     # 把 fonts/ 拷进包内，供 tank_game 的 bundle 字体候选使用
     datas.append((fonts_dir, "fonts"))
+license_file = os.path.join(root, "LICENSE")
+if os.path.isfile(license_file):
+    # MIT 要求分发时附带许可证原文
+    datas.append((license_file, "."))
 
 a = Analysis(
     [os.path.join(root, "tank_game.py")],
     pathex=[root],
     binaries=[],
     datas=datas,
-    hiddenimports=["tank_career", "tank_coach", "tank_paths"],
+    hiddenimports=["tank_career", "tank_coach", "tank_paths", "tank_version"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

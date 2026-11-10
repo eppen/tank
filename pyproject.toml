@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "双履 Twin Treads —— 双人同屏坦克对战（本地 Python + pygame）"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "Twin Treads" }]
 keywords = ["pygame", "tank", "game", "local-multiplayer"]
 dependencies = ["pygame>=2.5,<3"]
@@ -12,6 +12,16 @@ dependencies = ["pygame>=2.5,<3"]
 # 说明：本项目是单文件游戏 + PyInstaller 打包（见 packaging/windows/tank_game.spec），
 # 故意不声明 [build-system]，避免与既有的 PyInstaller 打包路径冲突。
 # 这里只提供项目元数据与工具配置。
+
+[tool.ruff]
+# 保守规则集：只查会真正出问题的（未定义名、未使用导入/变量、导入顺序、
+# pyupgrade、bugbear）。不启用格式检查，避免一次性重排整个单文件游戏。
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 # 自测脚本多为「顶层断言 + import 副作用」，且部分（如 _selftest_font.py）

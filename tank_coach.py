@@ -747,7 +747,7 @@ class BattleCoach:
             lines.append(f"> {_t(drills[0]['target'], drills[0]['target_en'])}")
         best = best_row(hist)
         if best:
-            lines.append(f"> " + _t(
+            lines.append("> " + _t(
                 f"最佳 {best.get('score', 0)} 分（{best.get('grade', '?')}，"
                 f"第 {best.get('index', '?')} 局）",
                 f"BEST {best.get('score', 0)} ({best.get('grade', '?')}, "
@@ -788,7 +788,7 @@ def load_history(path=None):
     """读取历史（不存在 / 坏了都当空历史，绝不让游戏起不来）。"""
     path = path or COACH_HISTORY_PATH
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {"version": 1, "rounds": []}

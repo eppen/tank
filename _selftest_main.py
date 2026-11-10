@@ -5,6 +5,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 os.environ.setdefault("TANK_SKIP_MENU", "1")
 
 import pygame
+
 import tank_game as g
 
 # 本测试只验证「击毁 → 胜负提示 → 按 R 重开」这条主循环路径，

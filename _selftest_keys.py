@@ -8,6 +8,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 os.environ.setdefault("TANK_SKIP_MENU", "1")
 
 import pygame
+
 import tank_game as g
 
 tmpdir = tempfile.mkdtemp(prefix="tank_keys_")

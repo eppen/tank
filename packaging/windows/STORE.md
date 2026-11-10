@@ -17,8 +17,8 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 powershell -ExecutionPolicy Bypass -File packaging\windows\smoke_test.ps1
 powershell -ExecutionPolicy Bypass -File packaging\windows\build_msix.ps1 `
   -IdentityName "YourPublisher.TankGame" `
-  -Publisher "CN=YourPublisher" `
-  -Version "1.0.0.0"
+  -Publisher "CN=YourPublisher"
+# -Version 省略时自动读取仓库根 tank_version.py（三段式补成四段式）
 ```
 
 产物：`dist\TankGame\TankGame.exe`、`dist\TankGame.msix`。

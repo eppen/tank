@@ -16,7 +16,6 @@ except OSError:
 
 import tank_career as c
 
-
 # --------------------------------------------------------------- 1) 空起步
 data = c.load(_CAREER_TMP)
 assert data["totals"]["1p"]["games"] == 0

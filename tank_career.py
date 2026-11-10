@@ -35,7 +35,7 @@ def load(path=None):
     """读取生涯战绩；不存在 / 坏了都返回空结构。"""
     path = path or CAREER_PATH
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return blank_career()

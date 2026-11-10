@@ -1,16 +1,31 @@
 # 把 dist\TankGame onedir 打成 MSIX（需 Windows SDK：makeappx / signtool）
 # 用法（先 build.ps1）：
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build_msix.ps1
-# 可选：-Publisher "CN=YourName" -Version "1.0.0.0"
+# 可选：-Publisher "CN=YourName"；-Version 不填则读取仓库根 tank_version.py
+# （三段式自动补成 MSIX 要求的四段式）
 
 param(
     [string]$Publisher = "CN=TankGameDev",
-    [string]$Version = "1.0.0.0",
+    [string]$Version = "",
     [string]$IdentityName = "TankGameDev.TankGame"
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+
+# 版本号唯一来源：仓库根 tank_version.py（不要再手写；_selftest_version.py 会检查）
+if (-not $Version) {
+    $VersionPy = Join-Path $Root "tank_version.py"
+    $versionSrc = [IO.File]::ReadAllText($VersionPy, [Text.Encoding]::UTF8)
+    $match = [regex]::Match($versionSrc, '__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $match.Success) { throw "Cannot read __version__ from $VersionPy" }
+    $Version = $match.Groups[1].Value
+}
+# MSIX / AppxManifest 要求四段数字版本
+if (($Version -split '\.').Count -lt 4) { $Version = "$Version.0" }
+if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+    throw "Invalid MSIX version: $Version (expected Major.Minor.Build.Revision)"
+}
 $Stage = Join-Path $Root "dist\msix_payload"
 $OutMsix = Join-Path $Root "dist\TankGame.msix"
 $ManifestSrc = Join-Path $PSScriptRoot "msix\AppxManifest.xml"
@@ -46,7 +61,12 @@ $manifestPath = Join-Path $Stage "AppxManifest.xml"
 $xml = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
 $xml = $xml -replace 'Name="YourPublisher\.TankGame"', "Name=`"$IdentityName`""
 $xml = $xml -replace 'Publisher="CN=YourPublisher"', "Publisher=`"$Publisher`""
-$xml = $xml -replace 'Version="1\.0\.0\.0"', "Version=`"$Version`""
+# 只替换 <Identity> 里的 Version，别误伤其它标签
+$xml = [regex]::Replace(
+    $xml,
+    '(<Identity\b[^>]*\bVersion=")[^"]+(")',
+    '${1}' + $Version + '${2}'
+)
 # 无 BOM，避免 makeappx 解析清单失败
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [IO.File]::WriteAllText($manifestPath, $xml, $utf8)
